@@ -539,10 +539,11 @@ def value_and_grad(fun: Callable, argnums: int | Sequence[int] = 0,
                                           require_static_args_hashable=False)
     for leaf in tree_leaves(dyn_args):
       _check_input_dtype_grad(holomorphic, allow_int, leaf)
-    if not has_aux:
-      ans, vjp_py = _vjp(f_partial, *dyn_args)
-    else:
+    if has_aux:
       ans, vjp_py, aux = _vjp(f_partial, *dyn_args, has_aux=True)
+    else:
+      ans, vjp_py = _vjp(f_partial, *dyn_args)
+      aux = None
     _check_scalar(ans)
     tree_map(partial(_check_output_dtype_grad, holomorphic), ans)
     g = vjp_py(lax_internal._one_vjp(ans))
@@ -736,12 +737,12 @@ def jacfwd(fun: Callable, argnums: int | Sequence[int] = 0,
     f_partial, dyn_args = argnums_partial(f, argnums, args,
                                           require_static_args_hashable=False)
     tree_map(partial(_check_input_dtype_jacfwd, holomorphic), dyn_args)
-    if not has_aux:
-      pushfwd: Callable = partial(_jvp, f_partial, dyn_args)
-      y, jac = vmap(pushfwd, out_axes=(None, -1))(_std_basis(dyn_args))
-    else:
-      pushfwd: Callable = partial(_jvp, f_partial, dyn_args, has_aux=True)
+    pushfwd: Callable = partial(_jvp, f_partial, dyn_args, has_aux=has_aux)
+    if has_aux:
       y, jac, aux = vmap(pushfwd, out_axes=(None, -1, None))(_std_basis(dyn_args))
+    else:
+      y, jac = vmap(pushfwd, out_axes=(None, -1))(_std_basis(dyn_args))
+      aux = None
     tree_map(partial(_check_output_dtype_jacfwd, holomorphic), y)
     example_args = dyn_args[0] if isinstance(argnums, int) else dyn_args
     jac_tree = tree_map(partial(_jacfwd_unravel, example_args), y, jac)
@@ -830,10 +831,11 @@ def jacrev(fun: Callable, argnums: int | Sequence[int] = 0,
     f_partial, dyn_args = argnums_partial(f, argnums, args,
                                           require_static_args_hashable=False)
     tree_map(partial(_check_input_dtype_jacrev, holomorphic, allow_int), dyn_args)
-    if not has_aux:
-      y, pullback = _vjp(f_partial, *dyn_args)
-    else:
+    if has_aux:
       y, pullback, aux = _vjp(f_partial, *dyn_args, has_aux=True)
+    else:
+      y, pullback = _vjp(f_partial, *dyn_args)
+      aux = None
     tree_map(partial(_check_output_dtype_jacrev, holomorphic), y)
     jac = vmap(pullback)(_std_basis(y))
     jac = jac[0] if isinstance(argnums, int) else jac
@@ -1307,7 +1309,7 @@ def _mapped_axis_size(fn, tree, vals, dims, name):
   args, kwargs = tree_unflatten(tree, vals)
   try:
     ba = inspect.signature(fn).bind(*args, **kwargs)
-    signature_parameters: list[str] = list(ba.signature.parameters.keys())
+    signature_parameters: list[str] | None = list(ba.signature.parameters.keys())
   except (TypeError, ValueError):
     signature_parameters = None
 
@@ -1819,8 +1821,8 @@ def _cpp_pmap(
 
     ### Decide whether we can support the C++ fast path
     use_fastpath = False
-    if execute is not None and isinstance(execute, pxla.ExecuteReplicated):
-      execute_replicated = typing.cast(pxla.ExecuteReplicated, execute)
+    if isinstance(execute, pxla.ExecuteReplicated):
+      execute_replicated: pxla.ExecuteReplicated = execute
       use_fastpath = (
         # TODO(sharadmv): Enable effects in replicated computation
         not execute_replicated.has_unordered_effects
@@ -1865,11 +1867,11 @@ def _cpp_pmap(
 
   pmap_f = wraps(fun)(cpp_mapped_f)
   # Store some data for the `lower` and `trace` methods
-  pmap_f._fun = fun
-  pmap_f._prepare_pmap = prepare_pmap_fn
-  pmap_f._backend = backend
-  pmap_f._axis_name = axis_name
-  pmap_f._donate_tuple = donate_tuple
+  pmap_f._fun = fun  # pyrefly: ignore[missing-attribute]
+  pmap_f._prepare_pmap = prepare_pmap_fn  # pyrefly: ignore[missing-attribute]
+  pmap_f._backend = backend  # pyrefly: ignore[missing-attribute]
+  pmap_f._axis_name = axis_name  # pyrefly: ignore[missing-attribute]
+  pmap_f._donate_tuple = donate_tuple  # pyrefly: ignore[missing-attribute]
 
   # TODO(necula): move these to top-level; we don't need to do this for
   # every pmap
@@ -2077,7 +2079,7 @@ def linearize(fun: Callable, *primals, has_aux: bool = False
   if has_aux:
     out_tree, aux_tree = out_tree()
   else:
-    out_tree = out_tree()
+    out_tree, aux_tree = out_tree(), None
   out_primal_py = tree_unflatten(out_tree, out_primals)
   primal_avals = list(map(core.get_aval, primals_flat))
   # Ensure that lifted_jvp is a PyTree
@@ -2207,6 +2209,7 @@ def _vjp(fun, *primals, has_aux=False):
     out_primals_flat, out_pvals, jaxpr, residuals = ad.linearize(
         flat_fun, *primals_flat)
     out_tree = out_tree()
+    aux = aux_tree = None
   else:
     flat_fun, out_aux_trees = flatten_fun_nokwargs2(fun, in_tree)
     out_primals_flat, out_pvals, jaxpr, residuals, aux = ad.linearize(
@@ -2228,6 +2231,8 @@ def _vjp(fun, *primals, has_aux=False):
   if not has_aux:
     return out_primals, f_vjp
   else:
+    assert aux is not None
+    assert aux_tree is not None
     return out_primals, f_vjp, tree_unflatten(aux_tree, aux)
 
 def _vjp3_callable(spec, out_known, jaxpr, out_primal_avals, in_tree, out_tree,
@@ -2452,7 +2457,7 @@ def linear_transpose(fun: Callable, *primals, reduce_axes=()) -> Callable:
 @overload
 def make_jaxpr(
     fun: Callable,
-    static_argnums: int | Iterable[int] = (),
+    static_argnums: int | Sequence[int] = (),
     axis_env: Sequence[tuple[AxisName, int]] | None = None,
     return_shape: Literal[False] = ...,
 ) -> Callable[..., core.ClosedJaxpr]:
@@ -2461,7 +2466,7 @@ def make_jaxpr(
 @overload
 def make_jaxpr(
     fun: Callable,
-    static_argnums: int | Iterable[int] = (),
+    static_argnums: int | Sequence[int] = (),
     axis_env: Sequence[tuple[AxisName, int]] | None = None,
     return_shape: Literal[True] = ...,
 ) -> Callable[..., tuple[core.ClosedJaxpr, Any]]:
@@ -2470,7 +2475,7 @@ def make_jaxpr(
 @partial(api_boundary, repro_api_name="jax.make_japr")
 def make_jaxpr(
     fun: Callable,
-    static_argnums: int | Iterable[int] = (),
+    static_argnums: int | Sequence[int] = (),
     axis_env: Sequence[tuple[AxisName, int]] | None = None,
     return_shape: bool = False,
 ) -> Callable[..., core.ClosedJaxpr | tuple[core.ClosedJaxpr, Any]]:

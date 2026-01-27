@@ -1039,6 +1039,7 @@ def _infer_bwd_output_sharding(mesh, arg_shapes, layout, variadic_args):
   grad_value_sharding = NamedSharding(mesh, PartitionSpec(*key_spec))
   out_shardings = [grad_query_sharding, grad_key_sharding, grad_value_sharding]
   if has_dbias:
+    assert bias_spec is not None
     grad_bias_sharding = NamedSharding(mesh, PartitionSpec(*bias_spec))
     out_shardings = out_shardings + [grad_bias_sharding]
   return out_shardings

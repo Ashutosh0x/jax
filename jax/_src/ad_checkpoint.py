@@ -201,7 +201,7 @@ checkpoint_policies = types.SimpleNamespace(
 ### Main API
 
 @partial(api_boundary, repro_api_name="jax.checkpoint")
-def checkpoint(fun: Callable, *, prevent_cse: bool = True,
+def checkpoint(fun: Callable, *, prevent_cse: bool | Sequence[bool] = True,
                policy: Callable[..., bool] | None = None,
                static_argnums: int | tuple[int, ...] = (),
                concrete: bool | DeprecatedArg = DeprecatedArg()) -> Callable:
@@ -359,7 +359,7 @@ def checkpoint(fun: Callable, *, prevent_cse: bool = True,
 
   if isinstance(static_argnums, int):
     static_argnums = static_argnums,
-  if isinstance(prevent_cse, list):
+  if isinstance(prevent_cse, Sequence):
     prevent_cse = tuple(prevent_cse)
   if not isinstance(prevent_cse, (tuple, bool)):
     raise TypeError("prevent_cse must be a bool or tuple of bools, got "
@@ -760,9 +760,9 @@ ad.fancy_transposes[remat_p] = remat_transpose
 def transpose_jaxpr(jaxpr: core.ClosedJaxpr, in_linear: bool | Sequence[bool],
                     out_zeros: bool | Sequence[bool],
                     ) -> tuple[core.ClosedJaxpr, list[bool]]:
-  if type(in_linear) is bool:
+  if isinstance(in_linear, bool):
     in_linear = (in_linear,) * len(jaxpr.in_avals)
-  if type(out_zeros) is bool:
+  if isinstance(out_zeros, bool):
     out_zeros = (out_zeros,) * len(jaxpr.out_avals)
   return _transpose_jaxpr(jaxpr, tuple(in_linear), tuple(out_zeros))
 
@@ -802,7 +802,7 @@ def _transpose_jaxpr(jaxpr: core.ClosedJaxpr,
     in_cts = in_cts[len(consts):]
 
     # Identify symbolic zeros in the resulting cotangents, and return nonzeros.
-    in_zeros = cell.in_cts_zero = [type(ct) is ad_util.Zero for ct in in_cts]
+    in_zeros = cell.in_cts_zero = [type(ct) is ad_util.Zero for ct in in_cts]  # type: ignore[missing-attribute]
     in_cts_nz, _ = partition_list(in_zeros, in_cts)
     return in_cts_nz
 
@@ -811,7 +811,7 @@ def _transpose_jaxpr(jaxpr: core.ClosedJaxpr,
   transposed_jaxpr_, _, consts = pe.trace_to_jaxpr_dynamic(
       transposed_wrapped, in_avals)
   transposed_jaxpr = core.ClosedJaxpr(transposed_jaxpr_, consts)
-  return transposed_jaxpr, cell.in_cts_zero  # pytype: disable=attribute-error
+  return transposed_jaxpr, cell.in_cts_zero  # type: ignore[missing-attribute]
 
 def remat_vmap(axis_data, args, dims, *, jaxpr, **params):
   assert not jaxpr.constvars

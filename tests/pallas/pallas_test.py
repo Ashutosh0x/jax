@@ -314,12 +314,18 @@ class PallasCallTest(ptu.PallasTest):
       kwargs=[
           dict(shape=(), block_shape=()),
           dict(shape=(2,), block_shape=(2,)),
-          dict(shape=(128,), block_shape=(128,)),
-          dict(shape=(128,), block_shape=(64,), dtype=np.int16),
-          dict(shape=(128,), block_shape=(128,), dtype=np.int16),
-          dict(shape=(1024,), block_shape=(128,), dtype=np.int16),
-          dict(shape=(1024,), block_shape=(256,), dtype=np.int16),
           dict(shape=(128,), block_shape=(64,)),
+          dict(shape=(128,), block_shape=(128,)),
+          dict(shape=(1024,), block_shape=(128,)),
+          dict(shape=(2048,), block_shape=(256,)),
+          dict(shape=(256,), block_shape=(128,), dtype=np.int16),
+          dict(shape=(256,), block_shape=(256,), dtype=np.int16),
+          dict(shape=(1024,), block_shape=(256,), dtype=np.int16),
+          dict(shape=(2048,), block_shape=(512,), dtype=np.int16),
+          dict(shape=(512,), block_shape=(256,), dtype=np.int8),
+          dict(shape=(512,), block_shape=(512,), dtype=np.int8),
+          dict(shape=(1024,), block_shape=(512,), dtype=np.int8),
+          dict(shape=(2048,), block_shape=(512,), dtype=np.int8),
           dict(shape=(2, 2), block_shape=(2, 2)),
           dict(shape=(3, 3), block_shape=(3, 3)),
           dict(shape=(4, 2), block_shape=(2, 2)),
@@ -349,8 +355,21 @@ class PallasCallTest(ptu.PallasTest):
   def test_block_spec_valid_block_shapes(self, *,
                                          shape, block_shape,
                                          dtype=np.int32):
-    if np.iinfo(dtype).bits == 16:
-      self.skipTest("TODO(necula): test fails with Mosaic unimplemented for np.int16")
+    if not jtu.is_cloud_tpu_at_least(2026, 2, 23) and (
+        np.iinfo(dtype).bits <= 16
+        or (shape == (1024,) and block_shape == (128,))
+        or (shape == (2048,) and block_shape == (256,))
+    ):
+      self.skipTest("requires newer TPU")
+    if not jtu.is_device_tpu_at_least(4) and (
+        (shape == (1024,) and block_shape == (128,) and dtype == np.int32)
+        or (shape == (1024,) and block_shape == (256,) and dtype == np.int16)
+        or (shape == (1024,) and block_shape == (512,) and dtype == np.int8)
+        or (shape == (2048,) and block_shape == (512,) and dtype == np.int8)
+    ):
+      self.skipTest(
+          "TPU v3 or older requires at least 128*packing*2 block size"
+      )
     rank = len(shape)
     assert rank == len(block_shape)
     def copy_kernel(x_ref, o_ref):
@@ -366,29 +385,34 @@ class PallasCallTest(ptu.PallasTest):
             ValueError,
             "TPU lowering currently supports only blocks of rank >= 1")
 
-      if rank >= 1:
-        bs0, as0 = block_shape[-1], shape[-1]
-        if rank >= 2:
-          bs1, as1 = block_shape[-2], shape[-2]
-        else:
-          bs1, as1 = 1, 1
+      if rank == 1:
+        feasible_block_shape = (
+            block_shape[0] == shape[0]
+            or block_shape[0] % (128 * 4 // np.dtype(dtype).itemsize) == 0
+        )
+        if not feasible_block_shape:
+          test_context = self.assertRaisesRegex(
+              ValueError,
+              r"the first \(and only\) dimension of the block shape is a"
+              " multiple of the tiling size",
+          )
 
+      if rank > 1:
+        bs0, bs1, as0, as1 = (
+            block_shape[-1],
+            block_shape[-2],
+            shape[-1],
+            shape[-2],
+        )
         evenly_divisible = (
             (bs0 == as0 or bs0 % 128 == 0) and
             (bs1 == as1 or bs1 % 8 == 0))
         if not evenly_divisible:
-          if rank == 1:
-            test_context = self.assertRaisesRegex(
-                ValueError,
-                r"the first \(and only\) dimension of the block shape is a"
-                " multiple of the tiling size",
-            )
-          else:
-            test_context = self.assertRaisesRegex(
-                ValueError,
-                "last two dimensions of your block shape are divisible by 8"
-                " and 128",
-            )
+          test_context = self.assertRaisesRegex(
+              ValueError,
+              "last two dimensions of your block shape are divisible by 8"
+              " and 128",
+          )
 
     elif jtu.test_device_matches(["gpu"]) and not self.INTERPRET:
       block_size = math.prod(block_shape)

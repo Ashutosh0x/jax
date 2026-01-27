@@ -243,7 +243,7 @@ def _parse_values(
   # Represent all dimensions of an value. When an value[0]==BATCHING, the
   # value may have 0 or more leading dimensions.
   value = []
-  current_factor = None
+  current_factor: str | None = None
   # A value of None indicates the current dimension is not a compound dimension,
   # while a value of [] indicates that we have just started parsing a compound
   # dimension.
@@ -504,7 +504,7 @@ def sdy_sharding_rule_to_mlir(
       if batching_group in batching_group_to_rank:
         #  This type check error is not correct, disable it:
         # Incompatible types in assignment (expression has type "int | None"
-        current_batching_rank = batching_group_to_rank.get(batching_group) # type: ignore
+        current_batching_rank = batching_group_to_rank[batching_group]
       else:
         raise ValueError("Unreachabled code")
     else:

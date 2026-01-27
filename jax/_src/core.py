@@ -1925,6 +1925,8 @@ class AvalQDD:
     return self.aval.new_from_loval(self.qdd, *lovals)  # type: ignore
 
   def to_tangent_aval(self):
+    if not hasattr(self.qdd, "to_tangent_qdd"):
+      raise ValueError(f"Cannot convert to tangent aval when {self.qdd=}.")
     return AvalQDD(self.aval.to_tangent_aval(), self.qdd.to_tangent_qdd())
 
 @dataclass(frozen=True)
@@ -1936,7 +1938,7 @@ def cur_qdd(x):
   prev_trace = trace_ctx.trace
   trace_ctx.set_trace(eval_trace)
   try:
-    return prev_trace.cur_qdd(x)
+    return prev_trace.cur_qdd(x)  # type: ignore[missing-attribute]
   finally:
     trace_ctx.set_trace(prev_trace)
 
@@ -2095,16 +2097,16 @@ def _make_lengths_same(sharding, ndim):
   assert False, "unreachable"
 
 def modify_spec_for_auto_manual(spec, mesh) -> P:
-  new_spec = []  # type: ignore
+  new_spec: list[Any] = []
   # PartitionSpec can only mention mesh axes that are Explicit.
   for s in spec:
     if s is None:
-      new_spec.append(s)  # type: ignore
+      new_spec.append(s)
     elif isinstance(s, tuple):
       new_spec.append(tuple(
           p for p in s if mesh._name_to_type[p] == AxisType.Explicit))
     else:
-      new_spec.append(s if mesh._name_to_type[s] == AxisType.Explicit else None)  # type: ignore
+      new_spec.append(s if mesh._name_to_type[s] == AxisType.Explicit else None)
   # Unreduced and reduced can mention mesh axes that are Explicit and Manual.
   new_unreduced = {u for u in spec.unreduced
                    if mesh._name_to_type[u] != AxisType.Auto}
@@ -2113,14 +2115,14 @@ def modify_spec_for_auto_manual(spec, mesh) -> P:
   return P(*new_spec, unreduced=new_unreduced, reduced=new_reduced)
 
 def remove_size_one_mesh_axis(spec, mesh) -> P:
-  new_spec = []  # type: ignore
+  new_spec: list[Any] = []
   for s in spec:
     if s is None:
-      new_spec.append(s)  # type: ignore
+      new_spec.append(s)
     elif isinstance(s, tuple):
       new_spec.append(tuple(i for i in s if mesh.shape[i] != 1))
     else:
-      new_spec.append(None if mesh.shape[s] == 1 else s)  # type: ignore
+      new_spec.append(None if mesh.shape[s] == 1 else s)
   return P(*new_spec, unreduced=spec.unreduced, reduced=spec.reduced)
 
 def _maybe_modify_sharding(sharding, ndim):
@@ -2538,10 +2540,10 @@ class Ref(metaclass=RefMeta):
   dtype = property(lambda self: self._aval.dtype)
 
   # get operations from aval, munging the name
-  def __getitem__(self, idx): return self._aval._getitem(self, idx)
-  def __setitem__(self, idx, x): return self._aval._setitem(self, idx, x)
-  def __len__(self) -> int: return self._aval._len(self)
-  def addupdate(self, x, idx=()): return self._aval._addupdate(self, idx, x)
+  def __getitem__(self, idx): return self._aval._getitem(self, idx)  # type: ignore[missing-attribute]
+  def __setitem__(self, idx, x): return self._aval._setitem(self, idx, x)  # type: ignore[missing-attribute]
+  def __len__(self) -> int: return self._aval._len(self)  # type: ignore[missing-attribute]
+  def addupdate(self, x, idx=()): return self._aval._addupdate(self, idx, x)  # type: ignore[missing-attribute]
 
   # some attributes/methods only work for lojax refs
   sharding = property(lambda self: self._refs._buf.sharding)

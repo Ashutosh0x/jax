@@ -399,11 +399,11 @@ class CustomJVPCallPrimitive(core.Primitive):
   def get_bind_params(self, params):
     new_params = dict(params)
     call_jaxpr: core.ClosedJaxpr = new_params.pop('call_jaxpr')
-    num_consts: int = new_params.pop('num_consts')
+    num_consts: int = new_params.pop('num_consts')  # pyrefly: ignore[bad-assignment]  # pyrefly#2449
     jvp_jaxpr_fun = new_params.pop('jvp_jaxpr_fun')
     fun = lu.wrap_init(core.jaxpr_as_fun(call_jaxpr),
                        debug_info=call_jaxpr.jaxpr.debug_info)
-    jvp = lift_jvp(num_consts, jvp_jaxpr_fun)
+    jvp = lift_jvp(num_consts, jvp_jaxpr_fun)  # pyrefly: ignore[bad-argument-type]  # pyrefly#2449
     return [fun, jvp], new_params
 
 def lift_jvp(num_consts: int, jvp_jaxpr_fun: lu.WrappedFun) -> lu.WrappedFun:
@@ -1006,11 +1006,11 @@ class CustomVJPCallPrimitive(core.Primitive):
   def get_bind_params(self, params):
     new_params = dict(params)
     call_jaxpr: core.ClosedJaxpr = new_params.pop('call_jaxpr')
-    num_consts: int = new_params.pop('num_consts')
+    num_consts: int = new_params.pop('num_consts')  # pyrefly: ignore[bad-assignment]  # pyrefly#2449
     fwd_jaxpr_thunk = new_params.pop('fwd_jaxpr_thunk')
     fun = lu.wrap_init(core.jaxpr_as_fun(call_jaxpr),
                        debug_info=call_jaxpr.jaxpr.debug_info)
-    fwd = lift_fwd(num_consts, fwd_jaxpr_thunk)
+    fwd = lift_fwd(num_consts, fwd_jaxpr_thunk)  # pyrefly: ignore[bad-argument-type]  # pyrefly#2449
     const_avals, _ = split_list(call_jaxpr.in_avals, [num_consts])
     bwd = _handle_consts_in_bwd(new_params.pop('bwd'), const_avals)
     return [fun, fwd, bwd], new_params
@@ -1712,7 +1712,7 @@ def _remat_opt_impl(
     num_consts: int,
     num_res: int,
     fwd_jaxpr: core.ClosedJaxpr,
-    fun_jaxpr_thunk: Callable[[], core.ClosedJaxpr],
+    fun_jaxpr_thunk: Callable[[], tuple[core.Jaxpr, Sequence[Any]]],
 ):
   del num_consts, num_res, fun_jaxpr_thunk  # unused
   return core.jaxpr_as_fun(fwd_jaxpr)(*args)
@@ -1727,7 +1727,7 @@ def _remat_opt_vmap(
     num_consts: int,
     num_res: int,
     fwd_jaxpr: core.ClosedJaxpr,
-    fun_jaxpr_thunk: Callable[[], core.ClosedJaxpr],
+    fun_jaxpr_thunk: Callable[[], tuple[core.Jaxpr, Sequence[Any]]],
 ):
   args = [batching.moveaxis(x, d, 0) if d is not not_mapped and d != 0
           else x for x, d in zip(args, in_dims)]
@@ -1763,7 +1763,7 @@ def _remat_opt_jvp(
     num_consts: int,
     num_res: int,
     fwd_jaxpr: core.ClosedJaxpr,
-    fun_jaxpr_thunk: Callable[[], core.ClosedJaxpr],
+    fun_jaxpr_thunk: Callable[[], tuple[core.Jaxpr, Sequence[Any]]],
 ):
   consts, primals = split_list(primals, [num_consts])
   consts_dot, tangents = split_list(tangents, [num_consts])
@@ -1799,7 +1799,7 @@ def _remat_opt_transpose(
     num_consts: int,
     num_res: int,
     fwd_jaxpr: core.ClosedJaxpr,
-    fun_jaxpr_thunk: Callable[[], core.ClosedJaxpr],
+    fun_jaxpr_thunk: Callable[[], tuple[core.Jaxpr, Sequence[Any]]],
 ):
   # TODO(dfm): It shouldn't be too hard to implement this as needed in the
   # future.

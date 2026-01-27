@@ -276,7 +276,7 @@ class State(config_ext.Config[_T]):
     raise TypeError(
         "bool() not supported for instances of type '{0}' "
         "(did you mean to use '{0}.value' instead?)".format(
-            type(self).__name__))
+            type(self).__name__))  # pyrefly: ignore[missing-attribute]  # pyrefly#2444
 
   def _set(self, value: _T) -> None:
     if self._parser:
@@ -548,7 +548,7 @@ def optional_enum_state(
                        f"got {new_val} of type {type(new_val)}.")
     return new_val
 
-  s = State['str | None'](
+  s = State[str | None](
       name, default, help, update_global_hook, update_thread_local_hook,
       parser, include_in_jit_key=include_in_jit_key,
       include_in_trace_context=include_in_trace_context,
@@ -906,7 +906,7 @@ class Flag(Generic[_T]):
     raise TypeError(
         "bool() not supported for instances of type '{0}' "
         "(did you mean to use '{0}.value' instead?)".format(
-            type(self).__name__))
+            type(self).__name__))  # pyrefly: ignore[missing-attribute]  # pyrefly#2444
 
   def _set(self, value: _T) -> None:
     self.value = value
