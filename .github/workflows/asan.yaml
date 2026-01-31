@@ -72,13 +72,24 @@ jobs:
           cd jax
           pip install uv~=0.5.30
           uv pip install -r build/test-requirements.txt
+      - name: Build CUDA
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: |
+          source ${GITHUB_WORKSPACE}/venv/bin/activate
+          cd jax
+          python build/build.py build --wheels=jax-cuda-plugin,jax-cuda-pjrt --verbose \
+            --bazel_options=--color=yes \
+            --bazel_options=--config=asan
       - name: Build and install JAX
         env:
           ASAN_OPTIONS: detect_leaks=0
         run: |
           source ${GITHUB_WORKSPACE}/venv/bin/activate
           cd jax
-          python build/build.py build --wheels=jaxlib --verbose \
+          bazel clean --expunge
+          python build/build.py build --wheels=jaxlib \
+            --verbose \
             --bazel_options=--color=yes \
             --bazel_options=--config=asan
           uv pip install dist/jaxlib-*.whl \
