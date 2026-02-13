@@ -55,8 +55,14 @@ else
   FREETHREADED_FLAG_VALUE="no"
 fi
 
+RULES_PYTHON_BOOTSTRAP_CONFIG=""
+if [[ "${JAXCI_ENABLE_BZLMOD:-0}" != "1" && "${JAXCI_HERMETIC_PYTHON_VERSION}" != "3.11" ]]; then
+  RULES_PYTHON_BOOTSTRAP_CONFIG="--config=rules_python_bootstrap"
+fi
+
 bazel test --config=rbe_linux_x86_64_cuda${JAXCI_CUDA_VERSION} \
       --repo_env=HERMETIC_PYTHON_VERSION="$JAXCI_HERMETIC_PYTHON_VERSION" \
+      $RULES_PYTHON_BOOTSTRAP_CONFIG \
       --@rules_python//python/config_settings:py_freethreaded="$FREETHREADED_FLAG_VALUE" \
       $OVERRIDE_XLA_REPO \
       --test_env=XLA_PYTHON_CLIENT_ALLOCATOR=platform \

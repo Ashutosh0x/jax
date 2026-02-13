@@ -97,6 +97,10 @@ if [[ "$driver_major_version" -lt "580" ]]; then
   TEST_CONFIG="$TEST_CONFIG --repo_env=HERMETIC_CUDA_UMD_VERSION=13.0.0"
 fi
 
+RULES_PYTHON_BOOTSTRAP_CONFIG=""
+if [[ "${JAXCI_ENABLE_BZLMOD:-0}" != "1" && "${JAXCI_HERMETIC_PYTHON_VERSION}" != "3.11" ]]; then
+  RULES_PYTHON_BOOTSTRAP_CONFIG="--config=rules_python_bootstrap"
+fi
 
 # Don't abort the script if one command fails to ensure we run both test
 # commands below.
@@ -109,6 +113,7 @@ set +e
 bazel test --config=$TEST_CONFIG \
       $CACHE_OPTION \
       --repo_env=HERMETIC_PYTHON_VERSION="$JAXCI_HERMETIC_PYTHON_VERSION" \
+      $RULES_PYTHON_BOOTSTRAP_CONFIG \
       --@rules_python//python/config_settings:py_freethreaded="$FREETHREADED_FLAG_VALUE" \
       $OVERRIDE_XLA_REPO \
       --//jax:build_jaxlib=$JAXCI_BUILD_JAXLIB \
@@ -140,6 +145,7 @@ echo "Running multi-accelerator tests (without RBE)..."
 bazel test --config=$TEST_CONFIG \
       $CACHE_OPTION \
       --repo_env=HERMETIC_PYTHON_VERSION="$JAXCI_HERMETIC_PYTHON_VERSION" \
+      $RULES_PYTHON_BOOTSTRAP_CONFIG \
       --@rules_python//python/config_settings:py_freethreaded="$FREETHREADED_FLAG_VALUE" \
       $OVERRIDE_XLA_REPO \
       --//jax:build_jaxlib=$JAXCI_BUILD_JAXLIB \

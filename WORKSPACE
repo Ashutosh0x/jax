@@ -51,13 +51,11 @@ python_init_repositories(
     default_python_version = "system",
     local_wheel_dist_folder = "../dist",
     local_wheel_inclusion_list = [
-        "libtpu*",
         "ml_dtypes*",
         "ml-dtypes*",
         "numpy*",
         "scipy*",
         "jax-*",
-        "jaxlib*",
         "jax_cuda*",
         "jax-cuda*",
     ],
@@ -70,6 +68,7 @@ python_init_repositories(
         "3.13-ft": "//build:requirements_lock_3_13_ft.txt",
         "3.14-ft": "//build:requirements_lock_3_14_ft.txt",
     },
+    rules_python_strict = True,
 )
 
 load("@xla//third_party/py:python_init_toolchains.bzl", "python_init_toolchains")
