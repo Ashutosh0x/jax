@@ -1362,6 +1362,7 @@ def _extract_aliased_ref(
     ref_aval: state_types.AbstractRef,
     transform_avals: Sequence[state_types.Transform],
     transforms: Sequence[state_types.Transform],
+    use_mgpu_dialect: bool,
 ) -> tuple[
     RefOrTmemType,
     state_types.AbstractRef,
@@ -1372,7 +1373,9 @@ def _extract_aliased_ref(
   # Ref there, updating the transforms.
   match transforms:
     case (
-        gpu_core.ExtractAliasedRef(dtype, transformed_shape, offset, layout) as t,
+        gpu_core.ExtractAliasedRef(
+            dtype, transformed_shape, offset, layout
+        ) as t,
         *other_transforms,
     ):
       ref_aval = t.transform_type(ref_aval)
@@ -1388,7 +1391,7 @@ def _extract_aliased_ref(
         ref = tcgen05.TMEMRef(
             address=address,
             shape=transformed_shape,
-            dtype=mgpu_utils.dtype_to_ir_type(dtype),
+            dtype=mlir_dtype,
             layout=layout,
         )
       else:
@@ -1399,14 +1402,33 @@ def _extract_aliased_ref(
         if ref_bits % 8:
           raise NotImplementedError("Only byte-aligned bitcasts are supported.")
         assert offset % gpu_core.SMEM_ALIGNMENT == 0
-        ref_bytes = ref_bits // 8
-        ref = mgpu.memref_slice(ref, slice(offset, offset + ref_bytes))
-        ref = _handle_dtype_bitcast(
-            ref,
-            ir.MemRefType(ref.type).element_type,
-            mgpu_utils.dtype_to_ir_type(dtype),
-        )
-        ref = mgpu.memref_reshape(ref, transformed_shape)
+
+        if use_mgpu_dialect:
+          if not isinstance(ref.owner, mgpu.dialect.SliceSMEMOp):
+            # This restriction could be lifted if necessary by:
+            # - Using memref ops to get the pointer and offset of the base ref.
+            # - Subtracting gpu_dialect.dynamic_shared_memory() from those to
+            #   get the base offset relative to the beginning of SMEM.
+            # - Implementing layout and lowering rules for all ops above.
+            raise NotImplementedError(
+                "The base ref for aliases must come from a slice_smem op."
+            )
+          base_offset = ref.owner.offset
+          const_offset = _i32_constant(offset)
+          total_offset = arith_dialect.addi(base_offset, const_offset)
+          ref_ty = ir.MemRefType.get(
+              transformed_shape, mlir_dtype, memory_space=mgpu_utils.smem()
+          )
+          ref = mgpu.dialect.slice_smem(ref_ty, total_offset)
+        else:
+          ref_bytes = ref_bits // 8
+          ref = mgpu.memref_slice(ref, slice(offset, offset + ref_bytes))
+          ref = _handle_dtype_bitcast(
+              ref,
+              ir.MemRefType(ref.type).element_type,
+              mlir_dtype,
+          )
+          ref = mgpu.memref_reshape(ref, transformed_shape)
       return (
           ref,
           ref_aval,
@@ -1529,7 +1551,11 @@ def _handle_transforms(
   # Before we handle other transforms, we resolve any possible leading
   # aliasing transform.
   ref, ref_aval, transform_avals, transforms = _extract_aliased_ref(
-      ref, ref_aval, transform_avals, transforms
+      ref,
+      ref_aval,
+      transform_avals,
+      transforms,
+      ctx.module_ctx.lowering_semantics == mgpu.LoweringSemantics.Warpgroup,
   )
   transformed_ref = ref
   new_transforms = []

@@ -39,6 +39,7 @@ from jax._src.lib.mlir import ir
 from jax._src.lib.mlir.dialects import arith as arith_dialect
 from jax._src.lib.mlir.dialects import gpu as gpu_dialect
 from jax._src.pallas import core as pallas_core
+from jax._src.pallas import pallas_call
 from jax._src.pallas import primitives as pallas_primitives
 from jax._src.pallas.mosaic_gpu import core as gpu_core
 from jax._src.pallas.mosaic_gpu import lowering as mgpu_lowering
@@ -137,6 +138,7 @@ class PallasTest(jtu.JaxTestCase, metaclass=PallasTestMetaclass):
   def setUp(self, *, artificial_shared_memory_limit=jtu._SMEM_SIZE_BOUND_FOR_TESTS):
     if not jtu.is_cuda_compute_capability_at_least("9.0"):
       self.skipTest("Only works on a GPU with capability >= sm90")
+    self.enter_context(pallas_call._PALLAS_USE_MOSAIC_GPU(True))
 
     super().setUp()
     self.enter_context(mgpu.core.artificial_shared_memory_limit(artificial_shared_memory_limit))
@@ -2083,9 +2085,11 @@ class PallasCallTest(PallasTest, jtu.CudaArchSpecificTest):
     np.testing.assert_array_equal(kernel(x, y), x + y)
 
   def test_smem_aliasing_works_basic(self):
-    self.skip_if_wg_semantics()
-
     in_shape = (2, 256)
+    if self.LOWERING_SEMANTICS == plgpu.LoweringSemantics.Warpgroup:
+      transforms = ()
+    else:
+      transforms = (plgpu.TilingTransform((64,)),)
 
     @functools.partial(
         self.pallas_call,
@@ -2109,12 +2113,7 @@ class PallasCallTest(PallasTest, jtu.CudaArchSpecificTest):
                     plgpu.SMEM((256,), jnp.bfloat16),
                     # Add an arbitrary level of nesting to make sure that we
                     # support PyTrees.
-                    [
-                        plgpu.SMEM(
-                            (128,),
-                            jnp.float32,
-                            transforms=(plgpu.TilingTransform((64,)),)),
-                    ]
+                    [plgpu.SMEM((128,), jnp.float32, transforms=transforms)]
                 ],
             )
         ],
@@ -2127,11 +2126,17 @@ class PallasCallTest(PallasTest, jtu.CudaArchSpecificTest):
       self.assertIsInstance(smem_ref128_2, state_types.TransformedRef)
       self.assertIs(smem_ref128.ref, smem_ref128_2.ref)
       self.assertEqual(smem_ref128.transforms, smem_ref128_2.transforms)
-      extract_alias_transform, tile_transform = smem_ref128.transforms
+
       # Ensure that the transforms provided in the scratch shapes have been
       # passed correctly.
-      self.assertIsInstance(extract_alias_transform, gpu_core.ExtractAliasedRef)
-      self.assertIsInstance(tile_transform, gpu_core.UntilingTransform)
+      if self.LOWERING_SEMANTICS == plgpu.LoweringSemantics.Warpgroup:
+        [extract_alias_transform] = smem_ref128.transforms
+        self.assertIsInstance(extract_alias_transform, gpu_core.ExtractAliasedRef)
+      else:
+        extract_alias_transform, tile_transform = smem_ref128.transforms
+        self.assertIsInstance(extract_alias_transform, gpu_core.ExtractAliasedRef)
+        self.assertIsInstance(tile_transform, gpu_core.UntilingTransform)
+
       smem_ref256[...] = x_ref[...] + 1
       plgpu.commit_smem()
       plgpu.copy_smem_to_gmem(smem_ref128, o_ref128)
@@ -2142,8 +2147,6 @@ class PallasCallTest(PallasTest, jtu.CudaArchSpecificTest):
     )
 
   def test_smem_aliasing_works_with_subbyte_dtypes(self):
-    self.skip_if_wg_semantics()
-
     @functools.partial(
         self.pallas_call,
         out_shape=jax.ShapeDtypeStruct([256], jnp.uint4),
@@ -2195,7 +2198,12 @@ class PallasCallTest(PallasTest, jtu.CudaArchSpecificTest):
     np.testing.assert_array_equal(test_as_i8[:256], unpack_i4_as_i8(x))
 
   def test_smem_aliasing_works_for_quantization(self):
+    # This test currently fails under WG semantics, not because of aliasing, but
+    # because of some issue with int4 types. E.g. a version of this test that
+    # has no aliasing, but simply loads int4 -> converts to bf16 -> stores
+    # also fails.
     self.skip_if_wg_semantics()
+
     shape = (64, 256)
     large_ty, small_ty = jnp.bfloat16, jnp.uint4
     large_swizzle = plgpu.SwizzleTransform(64 * jnp.finfo(large_ty).bits // 8)
