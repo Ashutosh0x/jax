@@ -117,10 +117,11 @@ def _create_scaled_instr_descriptor(
     transpose_a: bool,
     transpose_b: bool,
     scale_type: ir.Type,
+    sparse: bool = False,
 ) -> ir.Value:
   desc = 0
   # Bits 0, 1 are reserved
-  # We ignore sparsity (bit 2)
+  desc |= sparse << 2  # Sparsity, bit 2
   # Bit 3 is reserved
   assert 0 <= b_scale_idx < 4
   desc |= b_scale_idx << 4  # B scale factor data ID, bits 4-5
@@ -192,7 +193,10 @@ def mma(
     raise ValueError("Either none or both scales should be provided")
   is_sparse = a_sparse_metadata is not None
   if is_scaled and is_sparse:
-    raise NotImplementedError("Block-scaled sparse matmuls unsupported")
+    if isinstance(a, TMEMRef):
+      raise NotImplementedError(
+          "A in TMEM unsupported for block-scaled sparse matmuls"
+      )
 
   # Step 1. Establish the shape and element type of the operation.
   if not isinstance(b.type, ir.MemRefType):
@@ -307,8 +311,6 @@ def mma(
           f" accumulators, but got: {d.dtype}"
       )
   elif any(isinstance(element_type, t) for t in {ir.Float4E2M1FNType}):
-    if is_sparse:
-      raise NotImplementedError("Sparse MMA unsupported for f4e2m1fn")
     if not is_scaled:
       raise ValueError(
           f"MMA with element type {element_type} only supports block scaling"
@@ -342,6 +344,8 @@ def mma(
   scale_block: int | None = None
   if is_scaled:
     scale_block = 32 if a_scale.dtype == ir.Float8E8M0FNUType.get() else 16  # type: ignore
+    if is_sparse:
+      scale_block *= 2
     k_group_elems = max(k_group_elems, 4 * scale_block)
   required_multiple = 16 if collective else 8
   mode_name = "2 CTA" if collective else "1 CTA"
@@ -405,24 +409,28 @@ def mma(
           f"B scale dtype mismatch: expected {a_scale.dtype} (same as A), got"
           f" {b_scale.dtype}"
       )
-    if a_scale.shape != (m, k // scale_block):
+    k_scales = k // scale_block
+    if a_scale.shape != (m, k_scales):
       raise ValueError(
-          f"A scale shape mismatch: expected ({m}, {k // scale_block}), got"
+          f"A scale shape mismatch: expected ({m}, {k_scales}), got"
           f" {a_scale.shape}"
       )
-    if b_scale.shape != (n * num_cta, k // scale_block):
+    if b_scale.shape != (n * num_cta, k_scales):
       raise ValueError(
-          f"B scale shape mismatch: expected ({n}, {k // scale_block}), got"
+          f"B scale shape mismatch: expected ({n}, {k_scales}), got"
           f" {b_scale.shape}"
       )
   if is_sparse:
     a_sparse_metadata = cast(TMEMRef, a_sparse_metadata)
     if n % 32:
       raise ValueError(f"Sparse MMA requires N to be divisible by 32, got: {n}")
-    if a_sparse_metadata.shape != (m, k // 2):
+    sparse_group_elems = 8 if utils.bitwidth(element_type) == 4 else 4
+    # Each sparse group has 2 entries.
+    expected_meta_k = k // sparse_group_elems * 2
+    if a_sparse_metadata.shape != (m, expected_meta_k):
       raise ValueError(
-          f"A sparse metadata shape mismatch: expected {(m, k // 2)}, got"
-          f" {a_sparse_metadata.shape}"
+          f"A sparse metadata shape mismatch: expected {(m, expected_meta_k)},"
+          f" got {a_sparse_metadata.shape}"
       )
     if a_sparse_metadata.dtype != ir.IntegerType.get_signless(2):
       raise ValueError(
@@ -501,8 +509,9 @@ def mma(
     if a_sparse_addr_base is not None:
       if n_groups != 1 or m_groups != 1:
         raise NotImplementedError("A sparse metadata address calculation for multiple tiles")
-      assert k_group_elems % 32 == 0
-      cols_per_k_group = k_group_elems // 32
+      sparse_group_elems = 8 if utils.bitwidth(mma_element_type) == 4 else 4
+      # Each sparse group has 2 entries, each TMEM column holds 16 i2 entries.
+      cols_per_k_group = k_group_elems // sparse_group_elems * 2 // 16
       a_sparse_addr = arith.addi(a_sparse_addr_base, utils.c(ki * cols_per_k_group, i32))
     else:
       a_sparse_addr = None
@@ -590,7 +599,6 @@ def _do_mma(
 
   scale_steps = None
   if is_scaled:
-    assert not is_sparse
     if isinstance(element_type, ir.Float8E5M2Type) or isinstance(
         element_type, ir.Float8E4M3FNType
     ):
@@ -601,13 +609,15 @@ def _do_mma(
       kind = "mxf8f6f4.block_scale.scale_vec::1X"
       scale_steps = 4
       create_scaled_instr_descriptor = functools.partial(
-          create_scaled_f8f6f4_instr_descriptor, scale_type=scale_element_type
+          create_scaled_f8f6f4_instr_descriptor, scale_type=scale_element_type,
+          sparse=is_sparse,
       )
     elif isinstance(element_type, ir.Float4E2M1FNType):
       assert not a_transpose and not b_transpose
       create_scaled_instr_descriptor = functools.partial(
           create_scaled_f4_instr_descriptor,
           scale_type=scale_element_type,
+          sparse=is_sparse,
       )
       if scale_element_type == ir.Float8E8M0FNUType.get():
         kind = "mxf4.block_scale.scale_vec::2X"
@@ -647,8 +657,12 @@ def _do_mma(
   a_in_tmem = a_k_strides is None
   a_ptx = "[a_desc]" if a_in_tmem else "a_desc"
   sparse_mod = ".sp" if is_sparse else ""
-  sparse_meta_ptx = "[$5], " if is_sparse else ""
-  extra_constraints += ",r" if is_sparse else ""
+  sparse_meta_ptx = ""
+  if is_sparse:
+    sparse_meta_idx = 5 + (2 if is_scaled else 0)
+    sparse_meta_ptx = f"[${sparse_meta_idx}], "
+    extra_constraints += ",r"
+  sp_selector = None
   sparse_addr: tuple[Any, ...] = ()
   scales_addrs: tuple[Any, ...] = ()
   def _get_offset(idx: int, idx_tiling: tuple[int, ...], strides: tuple[int, ...]):
@@ -661,11 +675,22 @@ def _do_mma(
     offset = sum(i * s for i, s in zip(idxs, strides, strict=True))
     return offset >> 4
   for k_step in range(k // instr_k):
+    if is_sparse:
+      sparse_group_elems = 8 if elem_bitwidth == 4 else 4
+      # Each sparse group has 2 entries, each TMEM column holds 16 i2 entries.
+      meta_cols_per_instr = instr_k // sparse_group_elems * 2 // 16
+      instrs_per_col_pair = 2 // meta_cols_per_instr
+      sp_selector = k_step % instrs_per_col_pair
+      sparse_addr = (
+          arith.addi(
+              a_sparse_addr, utils.c(k_step // instrs_per_col_pair * 2, i32)
+          ),
+      )
     if is_scaled:
       assert scale_steps is not None
-      assert not is_sparse
       scale_vec_width = 4 // scale_steps
       scale_id = (k_step % scale_steps) * scale_vec_width
+      assert sp_selector in {None, 0}  # Scaled instr descriptor has no selector
       i_desc = create_scaled_instr_descriptor(
           m * num_cta, n * num_cta, element_type, element_type,
           scale_id, scale_id, a_transpose, b_transpose
@@ -679,25 +704,13 @@ def _do_mma(
           arith.addi(a_scale_addr, a_scale_addr_offset),
           arith.addi(b_scale_addr, b_scale_addr_offset),
       )
-    else:
-      sp_selector = None
-      if is_sparse:
-        assert 32 <= instr_k <= 64
-        selector_width = instr_k
-        k_steps_for_col_inc = 64 // selector_width
-        assert (k // instr_k) % k_steps_for_col_inc == 0
-        sp_selector = k_step % k_steps_for_col_inc
-        # If the K group is large, we need to increment the sparse metadata.
-        # TODO(apaszke): At this point the purpose of this function is becoming
-        # less clear, since we end up replicating address arithmetic that's
-        # already there in the caller. We should unify them into a single loop.
-        sparse_addr = (
-            arith.addi(
-                a_sparse_addr, utils.c(k_step // k_steps_for_col_inc * 2, i32)
-            ),
-        )
+    elif is_sparse:
       i_desc = create_instr_descriptor(
           m * num_cta, n * num_cta, d_type, element_type, a_transpose, b_transpose, sparsity_selector=sp_selector
+      )
+    else:
+      i_desc = create_instr_descriptor(
+          m * num_cta, n * num_cta, d_type, element_type, a_transpose, b_transpose
       )
     if a_in_tmem:
       cols_per_k_group = instr_k // packing // (1 + is_sparse)

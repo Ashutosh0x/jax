@@ -2274,6 +2274,240 @@ class TCGen05Test(TestCase, jtu.CudaArchSpecificTest):
     np.testing.assert_allclose(z, ref, atol=atol, rtol=rtol)
 
   @parameterized.product(
+      in_jax_dtype=(jnp.float8_e5m2, jnp.float8_e4m3fn),
+      scale_jax_dtype=(jnp.float8_e8m0fnu,),
+      m=(128,),
+      n=(128, 256),
+      swizzle=(128,),
+  )
+  def test_mma_block_scaled_sparse(self, m, n, in_jax_dtype, scale_jax_dtype, swizzle):
+    out_jax_dtype = jnp.float32
+    sparse_meta_dtype = jnp.uint2
+    block_size = 64
+    k_steps = 2
+
+    in_mlir_dtype = utils.dtype_to_ir_type(in_jax_dtype)
+    swizzle_elems = 8 * swizzle // bitwidth(in_mlir_dtype)
+    k = swizzle_elems * k_steps
+    lhs_tiling = rhs_tiling = (8, swizzle_elems)
+
+    def kernel(ctx, lhs, rhs, lhs_sparse_gmem, lhs_scales_gmem, rhs_scales_gmem, out, scratch):
+      (
+          lhs_smem, rhs_smem, lhs_sparse_smem,
+          lhs_scales_smem, rhs_scales_smem,
+          barriers, mma_barrier, acc, lhs_sparse, lhs_scales, rhs_scales,
+      ) = scratch
+      operand_kwargs = dict(
+          swizzle=swizzle,
+          gmem_transform=mgpu.TileTransform(lhs_tiling),
+      )
+      ctx.async_copy(src_ref=lhs, dst_ref=lhs_smem, barrier=barriers[0], **operand_kwargs)
+      ctx.async_copy(src_ref=rhs, dst_ref=rhs_smem, barrier=barriers[1], swizzle=swizzle, gmem_transform=mgpu.TileTransform(rhs_tiling))
+      ctx.async_copy(src_ref=lhs_sparse_gmem, dst_ref=lhs_sparse_smem, barrier=barriers[2])
+      ctx.async_copy(src_ref=lhs_scales_gmem, dst_ref=lhs_scales_smem, barrier=barriers[3])
+      ctx.async_copy(src_ref=rhs_scales_gmem, dst_ref=rhs_scales_smem, barrier=barriers[4])
+      for i in range(5):
+        barriers[i].wait()
+      with mgpu.single_thread():
+        tcgen05.async_copy_sparse_metadata_smem_to_tmem(lhs_sparse_smem, lhs_sparse)
+        tcgen05.async_copy_scales_smem_to_tmem(lhs_scales_smem, lhs_scales)
+        tcgen05.async_copy_scales_smem_to_tmem(rhs_scales_smem, rhs_scales)
+        tcgen05.mma(
+            acc,
+            lhs_smem,
+            mgpu.memref_transpose(rhs_smem, (1, 0, 3, 2)),
+            a_swizzle=swizzle,
+            b_swizzle=swizzle,
+            a_scale=lhs_scales,
+            b_scale=rhs_scales,
+            a_sparse_metadata=lhs_sparse,
+            accumulate=False,
+        )
+        tcgen05.commit_arrive(mma_barrier)
+      mma_barrier.wait(orders_tensor_core=True)
+      acc.load().store_untiled(out, optimized=False)
+
+    x_shape = (m, k // 2)
+    x = self.prng.uniform(-1, 1, x_shape).astype(in_jax_dtype)
+    y_shape = (n, k)
+    y = self.prng.uniform(-1, 1, y_shape).astype(in_jax_dtype)
+    out_shape = jax.ShapeDtypeStruct((m, n), out_jax_dtype)
+    scratch_shape = [
+        jax.ShapeDtypeStruct(tile_shape(x_shape, lhs_tiling), in_jax_dtype),
+        jax.ShapeDtypeStruct(tile_shape(y_shape, rhs_tiling), in_jax_dtype),
+        jax.ShapeDtypeStruct((m // 128, k // 128, 128, 64), sparse_meta_dtype),
+        jax.ShapeDtypeStruct((m // 128, k // (block_size * 4), 32, 16), scale_jax_dtype),
+        jax.ShapeDtypeStruct((n // 128, k // (block_size * 4), 32, 16), scale_jax_dtype),
+        mgpu.TMABarrier(5),
+        mgpu.Barrier(1),
+        mgpu.TMEM((m, n), out_jax_dtype),
+        mgpu.TMEM((m, k // 2), sparse_meta_dtype, layout=tcgen05.sparse_meta_layout()),
+        mgpu.TMEM((m, k // block_size), scale_jax_dtype, layout=tcgen05.scales_layout()),
+        mgpu.TMEM((n, k // block_size), scale_jax_dtype, layout=tcgen05.scales_layout()),
+    ]
+    index_pairs = np.asarray(np.meshgrid(range(4), range(4))).T.reshape(-1, 2)
+    valid_pairs = index_pairs[index_pairs[:, 0] < index_pairs[:, 1]]
+    assert len(valid_pairs) == 6
+    x_pairs = jax.random.randint(jax.random.key(1234), (m, k // 4), 0, 6, dtype=jnp.uint8)
+    x_sparse = valid_pairs[x_pairs]
+    assert x_sparse.shape == (m, k // 4, 2)
+    def format_sparse_meta(meta):
+      mn, k, _2 = meta.shape
+      assert _2 == 2
+      k *= 2
+      meta_tiled = (
+          meta.reshape(mn // 128, 128, k // 64, 64).transpose(0, 2, 1, 3)
+      )
+      return (
+          meta_tiled.reshape(mn // 128, k // 64, 128, 64)
+          .astype(sparse_meta_dtype)
+      )
+    x_gpu_sparse = format_sparse_meta(x_sparse)
+    a_scales, b_scales = self._sample_scales(m, k, n, block_size, scale_jax_dtype)
+    def format_scales(scales):
+      mn, k = scales.shape
+      assert mn % 128 == 0 and k % 4 == 0, scales.shape
+      return (
+          scales.reshape(mn // 128, 4, 32, k // 4, 4)
+          .transpose(0, 3, 2, 1, 4)
+          .reshape(mn // 128, k // 4, 32, 16)
+      )
+    a_gpu_scales, b_gpu_scales = map(format_scales, (a_scales, b_scales))
+    args = (x, y, x_gpu_sparse, a_gpu_scales, b_gpu_scales)
+    z = mgpu.as_gpu_kernel(
+        kernel, (1, 1, 1), (128, 1, 1), args, out_shape, scratch_shape
+    )(*args)
+    x_logical = np.zeros_like(x, shape=(m, k // 4, 4))
+    np.put_along_axis(x_logical, x_sparse, x.reshape(x_sparse.shape), axis=-1)
+    x_logical = x_logical.reshape(m, k)
+    x32 = x_logical.astype(np.float32)
+    y32 = y.astype(np.float32)
+    a_logical_scales = jnp.repeat(a_scales, block_size, axis=1).astype(jnp.float32)
+    b_logical_scales = jnp.repeat(b_scales, block_size, axis=1).astype(jnp.float32)
+    ref = (x32 * a_logical_scales) @ (y32 * b_logical_scales).T
+    np.testing.assert_allclose(z, ref, atol=2e-4, rtol=5e-6)
+
+  @parameterized.product(
+      in_jax_dtype=(jnp.float4_e2m1fn,),
+      scale_jax_dtype=(jnp.float8_e8m0fnu, jnp.float8_e4m3fn),
+      m=(128,),
+      n=(128, 256),
+      swizzle=(128,),
+  )
+  def test_mma_block_scaled_sparse_f4(self, m, n, in_jax_dtype, scale_jax_dtype, swizzle):
+    out_jax_dtype = jnp.float32
+    sparse_meta_dtype = jnp.uint2
+    if scale_jax_dtype == jnp.float8_e8m0fnu:
+      block_size = 64
+    elif scale_jax_dtype == jnp.float8_e4m3fn:
+      block_size = 32
+    k_steps = 2
+
+    in_mlir_dtype = utils.dtype_to_ir_type(in_jax_dtype)
+    swizzle_elems = 8 * swizzle // bitwidth(in_mlir_dtype)
+    k = swizzle_elems * k_steps
+    lhs_tiling = rhs_tiling = (8, swizzle_elems)
+
+    def kernel(ctx, lhs, rhs, lhs_sparse_gmem, lhs_scales_gmem, rhs_scales_gmem, out, scratch):
+      (
+          lhs_smem, rhs_smem, lhs_sparse_smem,
+          lhs_scales_smem, rhs_scales_smem,
+          barriers, mma_barrier, acc, lhs_sparse, lhs_scales, rhs_scales,
+      ) = scratch
+      operand_kwargs = dict(
+          swizzle=swizzle,
+          gmem_transform=mgpu.TileTransform(lhs_tiling),
+      )
+      ctx.async_copy(src_ref=lhs, dst_ref=lhs_smem, barrier=barriers[0], **operand_kwargs)
+      ctx.async_copy(src_ref=rhs, dst_ref=rhs_smem, barrier=barriers[1], swizzle=swizzle, gmem_transform=mgpu.TileTransform(rhs_tiling))
+      ctx.async_copy(src_ref=lhs_sparse_gmem, dst_ref=lhs_sparse_smem, barrier=barriers[2])
+      ctx.async_copy(src_ref=lhs_scales_gmem, dst_ref=lhs_scales_smem, barrier=barriers[3])
+      ctx.async_copy(src_ref=rhs_scales_gmem, dst_ref=rhs_scales_smem, barrier=barriers[4])
+      for i in range(5):
+        barriers[i].wait()
+      with mgpu.single_thread():
+        tcgen05.async_copy_sparse_metadata_smem_to_tmem(lhs_sparse_smem, lhs_sparse)
+        tcgen05.async_copy_scales_smem_to_tmem(lhs_scales_smem, lhs_scales)
+        tcgen05.async_copy_scales_smem_to_tmem(rhs_scales_smem, rhs_scales)
+        tcgen05.mma(
+            acc,
+            lhs_smem,
+            mgpu.memref_transpose(rhs_smem, (1, 0, 3, 2)),
+            a_swizzle=swizzle,
+            b_swizzle=swizzle,
+            a_scale=lhs_scales,
+            b_scale=rhs_scales,
+            a_sparse_metadata=lhs_sparse,
+            accumulate=False,
+        )
+        tcgen05.commit_arrive(mma_barrier)
+      mma_barrier.wait(orders_tensor_core=True)
+      acc.load().store_untiled(out, optimized=False)
+
+    x_shape = (m, k // 2)
+    x = self.prng.uniform(-1, 1, x_shape).astype(in_jax_dtype)
+    y_shape = (n, k)
+    y = self.prng.uniform(-1, 1, y_shape).astype(in_jax_dtype)
+    out_shape = jax.ShapeDtypeStruct((m, n), out_jax_dtype)
+    meta_k = k // 4
+    scratch_shape = [
+        jax.ShapeDtypeStruct(tile_shape(x_shape, lhs_tiling), in_jax_dtype),
+        jax.ShapeDtypeStruct(tile_shape(y_shape, rhs_tiling), in_jax_dtype),
+        jax.ShapeDtypeStruct((m // 128, meta_k // 64, 128, 64), sparse_meta_dtype),
+        jax.ShapeDtypeStruct((m // 128, k // (block_size * 4), 32, 16), scale_jax_dtype),
+        jax.ShapeDtypeStruct((n // 128, k // (block_size * 4), 32, 16), scale_jax_dtype),
+        mgpu.TMABarrier(5),
+        mgpu.Barrier(1),
+        mgpu.TMEM((m, n), out_jax_dtype),
+        mgpu.TMEM((m, meta_k), sparse_meta_dtype, layout=tcgen05.sparse_meta_layout()),
+        mgpu.TMEM((m, k // block_size), scale_jax_dtype, layout=tcgen05.scales_layout()),
+        mgpu.TMEM((n, k // block_size), scale_jax_dtype, layout=tcgen05.scales_layout()),
+    ]
+    n_groups = k // 8
+    index_pairs = np.asarray(np.meshgrid(range(4), range(4))).T.reshape(-1, 2)
+    valid_pairs = index_pairs[index_pairs[:, 0] < index_pairs[:, 1]]
+    assert len(valid_pairs) == 6
+    x_pairs = jax.random.randint(jax.random.key(1234), (m, n_groups), 0, 6, dtype=jnp.uint8)
+    x_sparse = valid_pairs[x_pairs]
+    assert x_sparse.shape == (m, n_groups, 2)
+    def format_sparse_meta(meta):
+      mn, groups, _2 = meta.shape
+      assert _2 == 2
+      k_meta = groups * 2
+      meta_tiled = (
+          meta.reshape(mn // 128, 128, k_meta // 64, 64).transpose(0, 2, 1, 3)
+      )
+      return (
+          meta_tiled.reshape(mn // 128, k_meta // 64, 128, 64)
+          .astype(sparse_meta_dtype)
+      )
+    x_gpu_sparse = format_sparse_meta(x_sparse)
+    a_scales, b_scales = self._sample_scales(m, k, n, block_size, scale_jax_dtype)
+    def format_scales(scales):
+      mn, k = scales.shape
+      assert mn % 128 == 0 and k % 4 == 0, scales.shape
+      return (
+          scales.reshape(mn // 128, 4, 32, k // 4, 4)
+          .transpose(0, 3, 2, 1, 4)
+          .reshape(mn // 128, k // 4, 32, 16)
+      )
+    a_gpu_scales, b_gpu_scales = map(format_scales, (a_scales, b_scales))
+    args = (x, y, x_gpu_sparse, a_gpu_scales, b_gpu_scales)
+    z = mgpu.as_gpu_kernel(
+        kernel, (1, 1, 1), (128, 1, 1), args, out_shape, scratch_shape
+    )(*args)
+    # 4-bit sparse data is filled in pairs of elements.
+    x32 = x.astype(np.float32).reshape(m, n_groups, 2, 2)
+    x_logical32 = np.zeros((m, n_groups, 4, 2), dtype=np.float32)
+    np.put_along_axis(x_logical32, x_sparse[..., np.newaxis], x32, axis=-2)
+    x_logical32 = x_logical32.reshape(m, k)
+    y32 = y.astype(np.float32)
+    a_logical_scales = jnp.repeat(a_scales, block_size, axis=1).astype(jnp.float32)
+    b_logical_scales = jnp.repeat(b_scales, block_size, axis=1).astype(jnp.float32)
+    ref = (x_logical32 * a_logical_scales) @ (y32 * b_logical_scales).T
+    np.testing.assert_allclose(z, ref, atol=2e-4, rtol=5e-6)
+
+  @parameterized.product(
       lhs_transpose=(False, True),
       rhs_transpose=(False, True),
       in_jax_dtype=(jnp.float16,),
