@@ -16,11 +16,24 @@ load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc:cc_test.bzl", "cc_test")
 load("@rules_python//python:defs.bzl", "py_library")
-load("//jaxlib:jax.bzl", "if_oss", "nanobind_extension")
+# Placeholder: load proto_library
+
+load("//jaxlib:jax.bzl", "cc_proto_library", "if_oss", "nanobind_extension")
 
 package(
     default_applicable_licenses = [],
     default_visibility = ["//jax/experimental:mosaic_gpu_users"],
+)
+
+proto_library(
+    name = "mosaic_gpu_proto",
+    srcs = ["mosaic_gpu.proto"],
+)
+
+cc_proto_library(
+    name = "mosaic_gpu_cc_proto",
+    compatible_with = None,
+    deps = [":mosaic_gpu_proto"],
 )
 
 py_library(
@@ -261,6 +274,7 @@ cc_library(
 cc_library(
     name = "custom_call",
     srcs = ["custom_call.cc"],
+    hdrs = ["custom_call.h"],
     linkopts = if_oss(
         [],  # We use a version script to ensure symbol visibility in the OSS build.
         [
@@ -271,6 +285,7 @@ cc_library(
     deps = [
         ":dump",
         ":library_paths",  # buildcleaner: keep
+        ":mosaic_gpu_cc_proto",
         ":nvshmem",
         ":passes",
         ":serde",
@@ -283,6 +298,7 @@ cc_library(
         "@com_google_absl//absl/base:nullability",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/functional:function_ref",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/status",
@@ -349,6 +365,9 @@ cc_library(
         "@xla//xla/backends/gpu/runtime:collective_params",
         "@xla//xla/core/collectives:rank_id",
         "@xla//xla/ffi",
+        "@xla//xla/ffi:type_registry",
+        "@xla//xla/service:custom_call_status",
+        "@xla//xla/service:custom_call_target_registry",
         "@xla//xla/service/gpu/llvm_gpu_backend:nvptx_libdevice_path",
         "@xla//xla/service/llvm_ir:llvm_command_line_options",
         "@xla//xla/stream_executor:device_description",
@@ -369,6 +388,7 @@ cc_test(
     srcs = ["custom_call_test.cc"],
     tags = ["requires-gpu-sm90"],
     deps = [
+        ":custom_call",
         ":mosaic_gpu_support",
         "//testing/base/public:gunit_main",
         "@com_google_absl//absl/base:log_severity",
@@ -378,12 +398,14 @@ cc_test(
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:string_view",
+        "@xla//xla/ffi:type_registry",
         "@xla//xla/hlo/builder:xla_computation",
         "@xla//xla/hlo/parser:hlo_parser",
         "@xla//xla/pjrt:pjrt_client",
         "@xla//xla/pjrt:pjrt_executable",
         "@xla//xla/pjrt/plugin/xla_gpu:xla_gpu_pjrt_client",
         "@xla//xla/service:gpu_plugin",
+        "@xla//xla/stream_executor/cuda:cuda_compute_capability",
         "@xla//xla/stream_executor/cuda:cuda_platform",
         "@xla//xla/tsl/platform:env",
         "@xla//xla/tsl/platform:statusor",

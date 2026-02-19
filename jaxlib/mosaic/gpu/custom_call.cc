@@ -13,6 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include "jaxlib/mosaic/gpu/custom_call.h"
+
 #include <fcntl.h>
 #include <spawn.h>
 #include <sys/wait.h>
@@ -42,6 +44,7 @@ limitations under the License.
 #include "absl/base/thread_annotations.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/functional/function_ref.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
@@ -52,6 +55,7 @@ limitations under the License.
 #include "absl/strings/str_format.h"
 #include "absl/strings/str_join.h"
 #include "absl/strings/str_split.h"
+#include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
 #include "third_party/gpus/cuda/include/cuda.h"
 #include "third_party/gpus/cuda/include/driver_types.h"
@@ -126,6 +130,7 @@ limitations under the License.
 #include "jaxlib/mosaic/gpu/dump.h"
 #include "jaxlib/mosaic/gpu/gpu_module_to_assembly.h"
 #include "jaxlib/mosaic/gpu/launch_lowering.h"
+#include "jaxlib/mosaic/gpu/mosaic_gpu.pb.h"
 #include "jaxlib/mosaic/gpu/nvshmem.h"
 #include "jaxlib/mosaic/gpu/passes.h"
 #include "jaxlib/mosaic/gpu/serde.h"
@@ -154,15 +159,11 @@ limitations under the License.
 #include "tsl/platform/path.h"
 #include "tsl/profiler/lib/traceme.h"
 
+namespace mosaic::gpu {
 namespace {
 
-using ::mosaic::gpu::NvshmemApi;
-
-namespace ffi = xla::ffi;
-namespace se = stream_executor;
-
-using MosaicInitFunc = void(void**, void**);
-using MosaicHostFunc = void(void*, void*, void**);
+namespace ffi = ::xla::ffi;
+namespace se = ::stream_executor;
 
 // Mirrors `--xla_gpu_cuda_data_dir`'s default value.
 constexpr std::string_view kDefaultCudaDataDir = "./cuda_sdk_lib";
@@ -184,6 +185,14 @@ absl::StatusOr<std::string> GetPtxIsaVersion(
   return absl::StrFormat("ptx%d", final_version);
 }
 
+void EnsureNativeLLVMisInitialized() {
+  static absl::once_flag init_flag;
+  absl::call_once(init_flag, []() {
+    llvm::InitializeNativeTarget();
+    llvm::InitializeNativeTargetAsmPrinter();
+  });
+}
+
 mlir::FailureOr<mlir::OpPassManager> GetPassPipeline(
     mlir::MLIRContext* ctx,
     const se::cuda::CompilationProvider* compilation_provider,
@@ -193,8 +202,7 @@ mlir::FailureOr<mlir::OpPassManager> GetPassPipeline(
   static absl::once_flag register_passes_flag;
   absl::call_once(register_passes_flag, [&compilation_provider, &cc]() {
     mosaic::gpu::EnsureLLVMNVPTXTargetIsRegistered();
-    llvm::InitializeNativeTarget();
-    llvm::InitializeNativeTargetAsmPrinter();
+    EnsureNativeLLVMisInitialized();
     mlir::registerCanonicalizer();
     mlir::registerCSE();
     mlir::registerStripDebugInfo();
@@ -459,26 +467,6 @@ absl::StatusOr<std::pair<std::string, std::string>> GetHostAndInitFuncNames(
   return std::make_pair(host_func_name, init_func_name);
 }
 
-struct CompiledKernel {
-  CompiledKernel(std::unique_ptr<llvm::orc::LLJIT> lljit,
-                 MosaicHostFunc* host_launch, MosaicInitFunc* init,
-                 bool is_comm_used)
-      : lljit(std::move(lljit)),
-        host_launch(host_launch),
-        init(init),
-        is_comm_used(is_comm_used) {}
-
-  // CompiledKernel is neither copyable nor movable. We use CompiledKernel* as a
-  // key in a cache, so we require pointer stability.
-  CompiledKernel(const CompiledKernel&) = delete;
-  CompiledKernel(CompiledKernel&& other) = delete;
-
-  std::unique_ptr<llvm::orc::LLJIT> lljit;
-  MosaicHostFunc* host_launch = nullptr;
-  MosaicInitFunc* init = nullptr;
-  bool is_comm_used = false;
-};
-
 absl::Status RunMlirPasses(mlir::ModuleOp module, se::CudaComputeCapability cc,
                            bool is_comm_used,
                            const mosaic::gpu::DumpOptions& dump_opts) {
@@ -576,8 +564,10 @@ absl::StatusOr<std::unique_ptr<llvm::MemoryBuffer>> CompileModuleToObject(
 }
 
 absl::StatusOr<std::unique_ptr<CompiledKernel>> CreateAndInitJIT(
-    std::unique_ptr<llvm::MemoryBuffer> object_file, mlir::ModuleOp module,
-    bool is_comm_used) {
+    std::unique_ptr<llvm::MemoryBuffer> object_file, std::string host_func_name,
+    std::string init_func_name, bool is_comm_used) {
+  EnsureNativeLLVMisInitialized();
+  std::string object_file_str = object_file->getBuffer().str();
   auto lljit_builder = llvm::orc::LLJITBuilder();
 
   auto tm_builder_or_error = llvm::orc::JITTargetMachineBuilder::detectHost();
@@ -678,15 +668,13 @@ absl::StatusOr<std::unique_ptr<CompiledKernel>> CreateAndInitJIT(
                                                llvm::toString(std::move(err))));
   }
 
-  TF_ASSIGN_OR_RETURN(auto host_and_init_func_names,
-                      GetHostAndInitFuncNames(module));
-  auto host_sym = lljit->lookup(host_and_init_func_names.first);
+  auto host_sym = lljit->lookup(host_func_name);
   if (auto err = host_sym.takeError()) {
     return absl::InternalError(absl::StrFormat(
         "Failed to lookup host symbol: %s", llvm::toString(std::move(err))));
   }
 
-  auto init_sym = lljit->lookup(host_and_init_func_names.second);
+  auto init_sym = lljit->lookup(init_func_name);
   if (auto err = init_sym.takeError()) {
     return absl::InternalError(absl::StrFormat(
         "Failed to lookup init symbol: %s", llvm::toString(std::move(err))));
@@ -694,9 +682,11 @@ absl::StatusOr<std::unique_ptr<CompiledKernel>> CreateAndInitJIT(
 
   VLOG(5) << "Successfully compiled Mosaic GPU kernel";
   return std::make_unique<CompiledKernel>(
-      std::move(lljit), host_sym->toPtr<MosaicHostFunc*>(),
-      init_sym->toPtr<MosaicInitFunc*>(), is_comm_used);
+      std::move(lljit), std::move(object_file_str),
+      host_sym->toPtr<MosaicHostFunc*>(), init_sym->toPtr<MosaicInitFunc*>(),
+      is_comm_used, std::move(host_func_name), std::move(init_func_name));
 }
+}  // namespace
 
 absl::StatusOr<std::unique_ptr<CompiledKernel>> Compile(
     llvm::StringRef module_str, se::CudaComputeCapability cc) {
@@ -773,28 +763,12 @@ absl::StatusOr<std::unique_ptr<CompiledKernel>> Compile(
   }
 #endif
 
-  return CreateAndInitJIT(std::move(object_file), *module, is_comm_used);
-}
+  TF_ASSIGN_OR_RETURN(auto host_and_init_func_names,
+                      GetHostAndInitFuncNames(*module));
 
-using KernelHash = std::array<uint64_t, 4>;
-
-absl::StatusOr<CompiledKernel*> CachedCompile(const KernelHash& kernel_hash,
-                                              llvm::StringRef module,
-                                              se::CudaComputeCapability cc) {
-  struct Cache {
-    absl::Mutex mutex;
-    absl::flat_hash_map<KernelHash, std::unique_ptr<CompiledKernel>> kernels
-        ABSL_GUARDED_BY(mutex);
-  };
-  static absl::NoDestructor<Cache> cache;
-
-  absl::MutexLock lock(cache->mutex);
-  auto it = cache->kernels.find(kernel_hash);
-  if (it != cache->kernels.end()) return it->second.get();
-  TF_ASSIGN_OR_RETURN(auto kernel, Compile(module, std::move(cc)));
-  auto [iter, inserted] =
-      cache->kernels.insert_or_assign(kernel_hash, std::move(kernel));
-  return iter->second.get();
+  return CreateAndInitJIT(
+      std::move(object_file), std::move(host_and_init_func_names.first),
+      std::move(host_and_init_func_names.second), is_comm_used);
 }
 
 absl::StatusOr<void*> InitKernel(const CompiledKernel& kernel) {
@@ -809,6 +783,80 @@ absl::StatusOr<void*> InitKernel(const CompiledKernel& kernel) {
   kernel.init(&module_ptr, &kernel_ptr);
   VLOG(5) << "Successfully initialized Mosaic GPU kernel";
   return kernel_ptr;
+}
+
+absl::StatusOr<std::string> CustomCallResources::Serialize(
+    const CustomCallResources& resources) {
+  MosaicGpuKernelProto kernel_proto;
+  CompiledKernel* kernel = resources.kernel;
+  kernel_proto.set_object_file(kernel->object_file);
+  kernel_proto.set_is_comm_used(kernel->is_comm_used);
+  kernel_proto.set_host_func_name(kernel->host_func_name);
+  kernel_proto.set_init_func_name(kernel->init_func_name);
+  kernel_proto.set_kernel_hash(resources.hash.data(), sizeof(KernelHash));
+  return kernel_proto.SerializeAsString();
+}
+
+namespace {
+
+// Retrieves a kernel from the cache or creates it using the provided factory.
+absl::StatusOr<CompiledKernel*> GetOrCreateKernel(
+    const KernelHash& kernel_hash,
+    absl::FunctionRef<absl::StatusOr<std::unique_ptr<CompiledKernel>>()>
+        factory) {
+  struct Cache {
+    absl::Mutex mutex;
+    absl::flat_hash_map<KernelHash, std::unique_ptr<CompiledKernel>> kernels
+        ABSL_GUARDED_BY(mutex);
+  };
+  static absl::NoDestructor<Cache> cache;
+
+  absl::MutexLock lock(cache->mutex);
+  auto it = cache->kernels.find(kernel_hash);
+  if (it != cache->kernels.end()) return it->second.get();
+  TF_ASSIGN_OR_RETURN(auto kernel, factory());
+  auto [iter, inserted] =
+      cache->kernels.insert_or_assign(kernel_hash, std::move(kernel));
+  return iter->second.get();
+}
+
+}  // namespace
+
+absl::StatusOr<std::unique_ptr<CustomCallResources>>
+CustomCallResources::Deserialize(absl::string_view data) {
+  MosaicGpuKernelProto kernel_proto;
+  if (!kernel_proto.ParseFromString(data)) {
+    return absl::InternalError("Failed to parse MosaicGpuKernel proto");
+  }
+  auto resources = std::make_unique<CustomCallResources>();
+  if (kernel_proto.kernel_hash().size() != sizeof(KernelHash)) {
+    return absl::InternalError("Invalid kernel hash size in proto");
+  }
+  std::memcpy(resources->hash.data(), kernel_proto.kernel_hash().data(),
+              sizeof(KernelHash));
+  TF_ASSIGN_OR_RETURN(
+      resources->kernel,
+      GetOrCreateKernel(
+          resources->hash,
+          [&]() -> absl::StatusOr<std::unique_ptr<CompiledKernel>> {
+            return CreateAndInitJIT(llvm::MemoryBuffer::getMemBufferCopy(
+                                        kernel_proto.object_file(), "kernel"),
+                                    kernel_proto.host_func_name(),
+                                    kernel_proto.init_func_name(),
+                                    kernel_proto.is_comm_used());
+          }));
+  return resources;
+}
+
+namespace {
+
+absl::StatusOr<CompiledKernel*> CachedCompile(const KernelHash& kernel_hash,
+                                              llvm::StringRef module,
+                                              se::CudaComputeCapability cc) {
+  return GetOrCreateKernel(
+      kernel_hash, [&]() -> absl::StatusOr<std::unique_ptr<CompiledKernel>> {
+        return Compile(module, std::move(cc));
+      });
 }
 
 // Initializes the kernel in the current CUDA context and return a handle to the
@@ -849,11 +897,6 @@ struct DeviceState {
   // Note: the collective metadata param to peers and multimem addresses are
   // pointing to the nullptr and should not be used during the lowering.
   std::vector<std::byte> metadata_bytes;
-};
-
-struct CustomCallResources {
-  CustomCallResources(CompiledKernel* kernel) : kernel(kernel) {}
-  CompiledKernel* kernel = nullptr;
 };
 
 // TODO(b/481949311): Move to the dedicated state tied to the module execution
@@ -902,7 +945,10 @@ absl::StatusOr<std::unique_ptr<CustomCallResources>> InstantiateResources(
   TF_ASSIGN_OR_RETURN(
       CompiledKernel * kernel,
       CachedCompile(hash, module, *cc->cuda_compute_capability()));
-  return std::make_unique<CustomCallResources>(kernel);
+  auto resources = std::make_unique<CustomCallResources>();
+  resources->kernel = kernel;
+  resources->hash = hash;
+  return resources;
 }
 
 absl::StatusOr<std::vector<ffi::AnyBuffer>> GetBuffers(
@@ -1245,23 +1291,23 @@ XLA_FFI_REGISTER_HANDLER(ffi::GetXlaFfiApi(), "mosaic_gpu_v2", "CUDA",
                              /*initialize=*/kMosaicGpuInitialize,
                              /*execute=*/kMosaicGpuExecute,
                          });
-
 }  // namespace
+}  // namespace mosaic::gpu
 
 extern "C" {
 
 __attribute__((visibility("default"))) void** MosaicGpuCompile(
     const char* module, int num_module_bytes) {
   std::string module_str(module, num_module_bytes);
-  auto cc = GetCudaComputeCapability();
+  auto cc = mosaic::gpu::GetCudaComputeCapability();
   if (!cc.ok()) {
     return nullptr;
   }
-  auto kernel = Compile(module_str, *cc);
+  auto kernel = mosaic::gpu::Compile(module_str, *cc);
   if (!kernel.ok()) {
     return nullptr;
   }
-  auto ctx = InitKernel(**kernel);
+  auto ctx = mosaic::gpu::InitKernel(**kernel);
   if (!ctx.ok()) {
     return nullptr;
   }
@@ -1273,7 +1319,7 @@ __attribute__((visibility("default"))) void** MosaicGpuCompile(
 }
 
 __attribute__((visibility("default"))) void MosaicGpuUnload(void** tuple_ptr) {
-  delete reinterpret_cast<CompiledKernel*>(tuple_ptr[2]);
+  delete reinterpret_cast<mosaic::gpu::CompiledKernel*>(tuple_ptr[2]);
   delete[] tuple_ptr;
 }
 

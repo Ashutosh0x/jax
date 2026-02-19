@@ -12,6 +12,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+#include "jaxlib/mosaic/gpu/custom_call.h"
 
 #include <memory>
 #include <string>
@@ -27,11 +28,13 @@ limitations under the License.
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/strings/substitute.h"
+#include "xla/ffi/type_registry.h"
 #include "xla/hlo/builder/xla_computation.h"
 #include "xla/hlo/parser/hlo_parser.h"
 #include "xla/pjrt/pjrt_client.h"
 #include "xla/pjrt/pjrt_executable.h"
 #include "xla/pjrt/plugin/xla_gpu/xla_gpu_pjrt_client.h"
+#include "xla/stream_executor/cuda/cuda_compute_capability.h"
 #include "xla/stream_executor/cuda/cuda_platform.h"  // IWYU pragma: keep
 #include "xla/tsl/platform/env.h"
 #include "xla/tsl/platform/statusor.h"
@@ -215,4 +218,65 @@ TEST(CustomCallTest, IgnoresUnknownAttributes) {
   EXPECT_THAT(ExecuteSync(executable.get()), IsOk());
 }
 
+TEST(CustomCallTest, SerializationRoundTrip) {
+  std::string mlir_module = R"(
+"builtin.module"() ({
+  "stable_mosaic_gpu.func.func"() ({
+  ^bb0(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr):
+    "stable_mosaic_gpu.func.return"() : () -> ()
+  }) {function_type = (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> (), llvm.emit_c_interface, sym_name = "main"} : () -> ()
+  "stable_mosaic_gpu.func.func"() ({
+  ^bb0(%arg0: !llvm.ptr, %arg1: !llvm.ptr):
+    "stable_mosaic_gpu.func.return"() : () -> ()
+  }) {function_type = (!llvm.ptr, !llvm.ptr) -> (), llvm.emit_c_interface, sym_name = "main_init"} : () -> ()
+}) {stable_mosaic_gpu.version = 6 : i64} : () -> ()
+)";
+
+  stream_executor::CudaComputeCapability cc(9, 0);
+  ASSERT_OK_AND_ASSIGN(std::unique_ptr<mosaic::gpu::CompiledKernel> kernel,
+                       mosaic::gpu::Compile(mlir_module, cc));
+
+  mosaic::gpu::KernelHash hash = {1, 2, 3, 4};
+  mosaic::gpu::CustomCallResources resources;
+  resources.kernel = kernel.get();
+  resources.hash = hash;
+
+  ASSERT_OK_AND_ASSIGN(std::string serialized,
+                       xla::ffi::TypeRegistry::Serialize(resources));
+
+  ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<mosaic::gpu::CustomCallResources> deserialized1,
+      xla::ffi::TypeRegistry::Deserialize<mosaic::gpu::CustomCallResources>(
+          serialized));
+
+  ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<mosaic::gpu::CustomCallResources> deserialized2,
+      xla::ffi::TypeRegistry::Deserialize<mosaic::gpu::CustomCallResources>(
+          serialized));
+
+  // Verify that the kernel was deduplicated and points to the same object.
+  EXPECT_EQ(deserialized1->kernel, deserialized2->kernel);
+
+  auto deserialized_kernel_ptr = deserialized1->kernel;
+
+  EXPECT_EQ(deserialized_kernel_ptr->object_file, kernel->object_file);
+  EXPECT_EQ(deserialized_kernel_ptr->host_func_name,
+            kernel->host_func_name);
+  EXPECT_EQ(deserialized_kernel_ptr->init_func_name,
+            kernel->init_func_name);
+
+  EXPECT_NE(deserialized_kernel_ptr->host_launch, nullptr);
+  EXPECT_NE(deserialized_kernel_ptr->init, nullptr);
+
+  // Test execution of the deserialized kernel.
+  void* module_ptr = nullptr;
+  void* kernel_context = nullptr;
+  deserialized_kernel_ptr->init(&module_ptr, &kernel_context);
+
+  void* stream = nullptr;
+  void* buffers = nullptr;
+  deserialized_kernel_ptr->host_launch(kernel_context, stream, &buffers);
+}
+
 }  // namespace
+
