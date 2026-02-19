@@ -1499,6 +1499,71 @@ def _wgmma_accumulator_deref_lowering(
   )
 
 
+# This primitive stores a value into a WGMMA accumulator ref. It is the
+# counterpart to wgmma_accumulator_deref_p. Before discharge, it writes to an
+# accumulator ref and the return value is unused. After discharge, the ref is
+# replaced by a regular value: the discharge rule re-binds the primitive, and
+# the lowering wraps the value into a WGMMAAccumulator.
+wgmma_accumulator_store_p = jax_core.Primitive("wgmma_accumulator_store_p")
+
+
+def wgmma_accumulator_store(acc_ref, val):
+  if not isinstance(acc_ref.aval, gpu_core.WGMMAAbstractAccumulatorRef):
+    raise TypeError(f"acc must be a WGMMAAccumulatorAbstractRef, got {acc_ref.aval=}")
+  wgmma_accumulator_store_p.bind(acc_ref, val)
+
+
+@wgmma_accumulator_store_p.def_effectful_abstract_eval
+def _wgmma_accumulator_store_abstract_eval(acc, val):
+  # Before discharge acc is a WGMMAAbstractAccumulatorRef. After discharge,
+  # the discharge rule re-binds the primitive and acc becomes a ShapedArray.
+  if isinstance(acc, gpu_core.WGMMAAbstractAccumulatorRef):
+    inner = acc.inner_aval
+  elif isinstance(acc, jax_core.ShapedArray):
+    inner = acc
+  else:
+    raise TypeError(f"Expected WGMMAAbstractAccumulatorRef or ShapedArray, got {type(acc)}")
+  if inner.shape != val.shape:
+    raise ValueError(
+        f"Accumulator shape {inner.shape} does not match value shape {val.shape}"
+    )
+  if inner.dtype != val.dtype:
+    raise ValueError(
+        f"Accumulator dtype {inner.dtype} does not match value dtype {val.dtype}"
+    )
+  effects = {gpu_core._wgmma_pipeline_effect}
+  if isinstance(acc, gpu_core.WGMMAAbstractAccumulatorRef):
+    effects.add(state.WriteEffect(0))
+  return inner, effects
+
+
+@discharge.register_discharge_rule(wgmma_accumulator_store_p)
+def _wgmma_accumulator_store_discharge(in_avals, out_avals, acc, val):
+  del in_avals, out_avals
+  return (wgmma_accumulator_store_p.bind(acc, val), None), []
+
+
+@lowering.register_lowering_rule(
+    wgmma_accumulator_store_p, mgpu.LoweringSemantics.Lane
+)
+def _wgmma_accumulator_store_lowering(
+    ctx: lowering.LoweringRuleContext, acc, val
+):
+  del ctx, acc
+  return mgpu.WGMMAAccumulator.from_registers(val)
+
+
+@lowering.register_lowering_rule(
+    wgmma_accumulator_store_p, mgpu.LoweringSemantics.Warpgroup
+)
+def _wgmma_accumulator_store_warpgroup_lowering(
+    ctx: lowering.LoweringRuleContext, acc, val
+):
+  del ctx, acc
+  val = mgpu.dialect.optimization_barrier([val])
+  nvvm_dialect.wgmma_fence_aligned()
+  return val
+
 # MMA for TensorCore gen 5.
 tcgen05_mma_p = jax_core.Primitive("tcgen05_mma")
 tcgen05_mma_p.multiple_results = True

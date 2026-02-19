@@ -1227,6 +1227,15 @@ class WGMMAAbstractAccumulatorRef(state.AbstractRef):
 
     return arr
 
+  def _setitem(self, tracer, idx, value):
+    from jax._src.pallas.mosaic_gpu.primitives import wgmma_accumulator_store  # pytype: disable=import-error
+    if not is_trivial_index(idx, tracer.shape):
+      raise NotImplementedError(
+          "Non-trivial indexing on WGMMAAbstractAccumulatorRef is not supported"
+          " for stores."
+      )
+    wgmma_accumulator_store(tracer, value)
+
 
 class AbstractTMEMRef(state.AbstractRef):
   __slots__ = ["inner_aval", "memory_space", "layout", "collective"]
