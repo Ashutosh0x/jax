@@ -4327,6 +4327,35 @@ class PallasCallTCGen05Test(PallasTCGen05Test):
     result = f(x, y)
     np.testing.assert_allclose(result, x @ y, rtol=1e-3)
 
+  def test_async_copy_smem_to_tmem(self):
+    self.skip_if_wg_semantics()
+    dtype = jnp.float16
+    swizzle = 128
+    m, n = 128, 128
+    transforms = self.default_transforms(swizzle=swizzle, dtype=dtype)
+
+    def kernel(x_gmem, y_gmem, smem, tma_barrier, mma_barrier, tmem):
+      plgpu.copy_gmem_to_smem(x_gmem, smem, tma_barrier)
+      plgpu.barrier_wait(tma_barrier)
+      plgpu.async_copy_smem_to_tmem(smem, tmem)
+      plgpu.tcgen05_commit_arrive(mma_barrier)
+      plgpu.barrier_wait(mma_barrier)
+      y_gmem[...] = plgpu.async_load_tmem(tmem)
+
+    f = self.kernel(
+        kernel,
+        out_shape=jax.ShapeDtypeStruct((m, n), dtype),
+        scratch_shapes=[
+            plgpu.SMEM((m, n), dtype, transforms=transforms),
+            plgpu.Barrier(),
+            plgpu.Barrier(orders_tensor_core=True),
+            plgpu.TMEM((m, n), dtype, packed=True),
+        ],
+    )
+    x = jax.random.uniform(jax.random.key(0), shape=(m, n), dtype=dtype)
+    result = jax.block_until_ready(f(x))
+    np.testing.assert_array_equal(result, x)
+
   def test_matmul_with_sliced_accumulator(self):
     dtype = jnp.bfloat16
     shape = (128, 128)

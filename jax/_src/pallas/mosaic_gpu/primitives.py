@@ -3483,7 +3483,7 @@ def _async_copy_to_tmem_abstract_eval(smem_ref, tmem_ref, *_args, **_kwargs):
     raise ValueError("async_copy_scales_to_tmem source must be an SMEM ref")
   if tmem_ref.memory_space != gpu_core.MemorySpace.TMEM:
     raise ValueError("async_copy_scales_to_tmem target must be a TMEM ref")
-  return (), {gpu_core._memory_effect}
+  return (), {state_types.ReadEffect(0), state_types.WriteEffect(1)}
 
 def _async_copy_to_tmem_lowering_rule(
     impl, ctx: lowering.LoweringRuleContext, smem_ref, tmem_ref, *leaves, smem_tree, tmem_tree, collective_axis
@@ -3550,6 +3550,145 @@ def _async_copy_sparse_metadata_to_tmem_lowering_rule(*args, **kwargs):
   return _async_copy_to_tmem_lowering_rule(
       tcgen05.async_copy_sparse_metadata_smem_to_tmem, *args, **kwargs
   )
+
+
+async_copy_smem_to_tmem_p = jax_core.Primitive("async_copy_smem_to_tmem")
+async_copy_smem_to_tmem_p.multiple_results = True
+
+
+def async_copy_smem_to_tmem(
+    smem_ref: _Ref,
+    tmem_ref: _Ref,
+    collective_axis: AxisName | None = None,
+):
+  """Copies data from SMEM to TMEM using the tcgen05.cp instruction.
+
+  The source SMEM ref must have tiling and swizzle transforms applied. The
+  destination TMEM ref must use packed layout (i.e. ``packed=True`` for sub-32b
+  types).
+
+  The copy is performed asynchronously. It can be awaited by calling
+  ``tcgen05_commit_arrive`` and waiting on the specified barrier. No
+  synchronization is necessary if the target of the copy is used by a
+  tcgen05_mma operation.
+
+  Args:
+    smem_ref: The SMEM reference to copy from.
+    tmem_ref: The TMEM reference to copy into.
+    collective_axis: The name of the cluster axis along which the
+      copy should be performed collectively. The cluster axis should have a
+      size of exactly 2, and must be on the minormost cluster axis.
+  """
+  smem_ref, smem_transforms = state_primitives.get_ref_and_transforms(
+      smem_ref, None, "async_copy_smem_to_tmem"
+  )
+  flat_smem_transforms, smem_transforms_treedef = tree_util.tree_flatten(
+      smem_transforms
+  )
+  tmem_ref, tmem_transforms = state_primitives.get_ref_and_transforms(
+      tmem_ref, None, "async_copy_smem_to_tmem"
+  )
+  flat_tmem_transforms, tmem_transforms_treedef = tree_util.tree_flatten(
+      tmem_transforms
+  )
+  async_copy_smem_to_tmem_p.bind(
+      smem_ref, tmem_ref, *flat_smem_transforms, *flat_tmem_transforms,
+      smem_tree=smem_transforms_treedef, tmem_tree=tmem_transforms_treedef,
+      collective_axis=collective_axis,
+  )
+
+
+@async_copy_smem_to_tmem_p.def_effectful_abstract_eval
+def _async_copy_smem_to_tmem_abstract_eval(
+    smem_ref, tmem_ref, *args, smem_tree, **_kwargs
+):
+  if smem_ref.memory_space != gpu_core.MemorySpace.SMEM:
+    raise ValueError("async_copy_smem_to_tmem source must be an SMEM ref")
+  if tmem_ref.memory_space != gpu_core.MemorySpace.TMEM:
+    raise ValueError("async_copy_smem_to_tmem target must be a TMEM ref")
+  smem_transforms = jax.tree.unflatten(smem_tree, args[:smem_tree.num_leaves])
+  smem_aval = smem_ref
+  for t in smem_transforms:
+    smem_aval = t.transform_type(smem_aval)
+  if smem_aval.dtype != tmem_ref.dtype:
+    raise ValueError(
+        f"Expected SMEM element type ({smem_aval.dtype}) to equal the TMEM"
+        f" element type ({tmem_ref.dtype})"
+    )
+  if smem_aval.shape != tmem_ref.shape:
+    raise ValueError(
+        f"Expected SMEM reference shape {smem_aval.shape} to equal the TMEM"
+        f" reference shape {tmem_ref.shape}"
+    )
+  return (), {state_types.ReadEffect(0), state_types.WriteEffect(1)}
+
+
+@lowering.register_lowering_rule(
+    async_copy_smem_to_tmem_p, mgpu.LoweringSemantics.Lane
+)
+@lowering.register_lowering_rule(
+    async_copy_smem_to_tmem_p,
+    mgpu.LoweringSemantics.Lane,
+    gpu_core.PrimitiveSemantics.Warp,
+)
+def _async_copy_smem_to_tmem_lowering_rule(
+    ctx: lowering.LoweringRuleContext, smem_ref, tmem_ref, *leaves,
+    smem_tree, tmem_tree, collective_axis,
+):
+  assert isinstance(tmem_ref, tcgen05.TMEMRef)
+  smem_leaves, tmem_leaves = util.split_list(leaves, [smem_tree.num_leaves])
+  smem_transforms = jax.tree.unflatten(smem_tree, smem_leaves)
+  tmem_transforms = jax.tree.unflatten(tmem_tree, tmem_leaves)
+  smem_aval = ctx.avals_in[0]
+  assert isinstance(smem_aval, state_types.AbstractRef)
+  tmem_aval = ctx.avals_in[1]
+  assert isinstance(tmem_aval, state_types.AbstractRef)
+  transform_avals = util.split_list(
+      ctx.avals_in[2:], [smem_tree.num_leaves]
+  )
+  smem_transform_avals = smem_tree.unflatten(transform_avals[0])
+  tmem_transform_avals = tmem_tree.unflatten(transform_avals[1])
+  smem_ref, transformed_smem_aval, smem_transforms = lowering._handle_transforms(
+      ctx, smem_aval, smem_ref, smem_transform_avals, smem_transforms,
+      handle_transposes=False
+  )
+  tmem_ref, _, tmem_transforms = lowering._handle_transforms(
+      ctx, tmem_aval, tmem_ref, tmem_transform_avals, tmem_transforms
+  )
+  match smem_transforms:
+    case (
+        gpu_core.UnswizzleRef(swizzle),
+        gpu_core.UntilingTransform(tiling),
+    ):
+      pass
+    case _:
+      raise NotImplementedError(
+          f"Unsupported transforms for SMEM ref: {smem_transforms}"
+      )
+  swizzle_elems = 8 * swizzle // dtypes.itemsize_bits(transformed_smem_aval.dtype)
+  if tiling != (8, swizzle_elems):
+    raise ValueError(
+        f"Tiling does not fit swizzle: expected (8, {swizzle_elems}), but got"
+        f" {tiling}"
+    )
+  if tmem_transforms:
+    raise NotImplementedError(
+        f"Unimplemented transforms for TMEM refs: {tmem_transforms}"
+    )
+
+  predicate = ctx.module_ctx.single_lane_predicate
+  if collective_axis is not None:
+    is_leader_block = _collective_mma_predicate(ctx, collective_axis)
+    predicate = arith_dialect.andi(predicate, is_leader_block)
+    collective = True
+  else:
+    collective = False
+
+  with mgpu.when(predicate):
+    tcgen05.async_copy_smem_to_tmem(
+        smem_ref, tmem_ref, swizzle, collective=collective
+    )
+  return ()
 
 
 semaphore_signal_parallel_p = jax_core.Primitive('semaphore_signal_parallel')

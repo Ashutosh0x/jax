@@ -1670,7 +1670,7 @@ class TCGen05Test(TestCase, jtu.CudaArchSpecificTest):
   @parameterized.product(
       jax_dtype=(jnp.float4_e2m1fn, jnp.float8_e5m2, jnp.float16, jnp.float32),
       n=(8, 16, 32, 64, 128 + 32, 256),
-      swizzle=(32, 64, 128),
+      swizzle=(16, 32, 64, 128),
   )
   def test_smem_to_tmem_copy(self, jax_dtype, n, swizzle):
     in_mlir_dtype = utils.dtype_to_ir_type(jax_dtype)

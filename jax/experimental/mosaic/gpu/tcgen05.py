@@ -1649,8 +1649,8 @@ def async_copy_smem_to_tmem(
   smem_ty = ir.MemRefType(smem_ref.type)
   if (dtype := smem_ty.element_type) != tmem_ref.dtype:
     raise ValueError(f"Incompatible dtypes: SMEM has {dtype}, TMEM has {tmem_ref.dtype}")
-  if swizzle not in {32, 64, 128}:
-    raise ValueError(f"Unsupported swizzle, expected 32, 64 or 128, but got: {swizzle}")
+  if swizzle not in {16, 32, 64, 128}:
+    raise ValueError(f"Unsupported swizzle, expected 16, 32, 64 or 128, but got: {swizzle}")
   bitwidth = utils.bitwidth(dtype)
   if tmem_ref.packing != 32 // bitwidth:
     raise ValueError(
@@ -1691,10 +1691,13 @@ def async_copy_smem_to_tmem(
   # We use a tiling of 8, so it is simply the tile stride.
   leading_byte_offset = 16
   stride_byte_offset = row_tile_stride * bitwidth // 8
-  assert swizzle >= 32  # We don't support swizzle==16 for now
-  assert tmem_ref.shape[1] * bitwidth // 8 >= 32
-  cp_shape = nvvm.Tcgen05CpShape.SHAPE_128x256b
-  cp_cols_bytes = 32  # 256 bit = 32 bytes
+  assert tmem_ref.shape[1] * bitwidth // 8 >= 16
+  if swizzle == 16:
+    cp_shape = nvvm.Tcgen05CpShape.SHAPE_128x128b
+    cp_cols_bytes = 16  # 128 bit = 16 bytes
+  else:
+    cp_shape = nvvm.Tcgen05CpShape.SHAPE_128x256b
+    cp_cols_bytes = 32  # 256 bit = 32 bytes
 
   minor_elems_per_cp = cp_cols_bytes * 8 // bitwidth
   num_smem_minor_tiles = smem_shape[1]
