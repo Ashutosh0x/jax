@@ -38,6 +38,7 @@ source "ci/utilities/setup_build_environment.sh"
 if [[ "$JAXCI_HERMETIC_PYTHON_VERSION" == *"-nogil" ]]; then
   JAXCI_HERMETIC_PYTHON_VERSION=${JAXCI_HERMETIC_PYTHON_VERSION%-nogil}-ft
   FREETHREADED_FLAG_VALUE="yes"
+  source "ci/build_freethread_numpy.sh"
 else
   FREETHREADED_FLAG_VALUE="no"
 fi
@@ -45,6 +46,11 @@ fi
 OVERRIDE_XLA_REPO=""
 if [[ "$JAXCI_CLONE_MAIN_XLA" == 1 ]]; then
   OVERRIDE_XLA_REPO="--override_repository=xla=${JAXCI_XLA_GIT_DIR}"
+fi
+
+RULES_PYTHON_BOOTSTRAP_CONFIG=""
+if [[ "${JAXCI_ENABLE_BZLMOD:-0}" != "1" && "${JAXCI_HERMETIC_PYTHON_VERSION}" != "3.11" ]]; then
+  RULES_PYTHON_BOOTSTRAP_CONFIG="--config=rules_python_bootstrap"
 fi
 
 NB_TPUS=$JAXCI_TPU_CORES
@@ -91,8 +97,9 @@ if [[ "$JAXCI_RUN_FULL_TPU_TEST_SUITE" == "1" ]]; then
   # Run single-accelerator tests in parallel
   bazel test \
     --repo_env=HERMETIC_PYTHON_VERSION="$JAXCI_HERMETIC_PYTHON_VERSION" \
-    --@rules_python//python/config_settings:py_freethreaded="$FREETHREADED_FLAG_VALUE" \
+    $RULES_PYTHON_BOOTSTRAP_CONFIG \
     $OVERRIDE_XLA_REPO \
+    --@rules_python//python/config_settings:py_freethreaded="$FREETHREADED_FLAG_VALUE" \
     --config=ci_linux_x86_64 \
     --config=ci_rbe_cache \
     --//jax:build_jaxlib=$JAXCI_BUILD_JAXLIB \
@@ -123,8 +130,9 @@ if [[ "$JAXCI_RUN_FULL_TPU_TEST_SUITE" == "1" ]]; then
   # Run multi-accelerator across all chips
   bazel test \
     --repo_env=HERMETIC_PYTHON_VERSION="$JAXCI_HERMETIC_PYTHON_VERSION" \
-    --@rules_python//python/config_settings:py_freethreaded="$FREETHREADED_FLAG_VALUE" \
+    $RULES_PYTHON_BOOTSTRAP_CONFIG \
     $OVERRIDE_XLA_REPO \
+    --@rules_python//python/config_settings:py_freethreaded="$FREETHREADED_FLAG_VALUE" \
     --config=ci_linux_x86_64 \
     --config=ci_rbe_cache \
     --//jax:build_jaxlib=$JAXCI_BUILD_JAXLIB \
@@ -152,8 +160,9 @@ else
   # Run single-accelerator tests in parallel
   bazel test \
     --repo_env=HERMETIC_PYTHON_VERSION="$JAXCI_HERMETIC_PYTHON_VERSION" \
-    --@rules_python//python/config_settings:py_freethreaded="$FREETHREADED_FLAG_VALUE" \
+    $RULES_PYTHON_BOOTSTRAP_CONFIG \
     $OVERRIDE_XLA_REPO \
+    --@rules_python//python/config_settings:py_freethreaded="$FREETHREADED_FLAG_VALUE" \
     --config=ci_linux_x86_64 \
     --config=ci_rbe_cache \
     --//jax:build_jaxlib=$JAXCI_BUILD_JAXLIB \
@@ -199,8 +208,9 @@ else
   # Run multi-accelerator across all chips
   bazel test \
     --repo_env=HERMETIC_PYTHON_VERSION="$JAXCI_HERMETIC_PYTHON_VERSION" \
-    --@rules_python//python/config_settings:py_freethreaded="$FREETHREADED_FLAG_VALUE" \
+    $RULES_PYTHON_BOOTSTRAP_CONFIG \
     $OVERRIDE_XLA_REPO \
+    --@rules_python//python/config_settings:py_freethreaded="$FREETHREADED_FLAG_VALUE" \
     --config=ci_linux_x86_64 \
     --config=ci_rbe_cache \
     --//jax:build_jaxlib=$JAXCI_BUILD_JAXLIB \

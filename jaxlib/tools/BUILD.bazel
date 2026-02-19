@@ -142,10 +142,10 @@ py_binary(
     main = "build_wheel.py",
     deps = [
         ":build_utils",
-        "@bazel_tools//tools/python/runfiles",
         "@pypi//build",
         "@pypi//setuptools",
         "@pypi//wheel",
+        "@rules_python//python/runfiles",
     ],
 )
 
@@ -202,10 +202,10 @@ py_binary(
     main = "build_gpu_kernels_wheel.py",
     deps = [
         ":build_utils",
-        "@bazel_tools//tools/python/runfiles",
         "@pypi//build",
         "@pypi//setuptools",
         "@pypi//wheel",
+        "@rules_python//python/runfiles",
     ],
 )
 
@@ -310,10 +310,10 @@ py_binary(
     main = "build_gpu_plugin_wheel.py",
     deps = [
         ":build_utils",
-        "@bazel_tools//tools/python/runfiles",
         "@pypi//build",
         "@pypi//setuptools",
         "@pypi//wheel",
+        "@rules_python//python/runfiles",
     ],
 )
 
@@ -487,10 +487,10 @@ py_binary(
     main = "build_mosaic_wheel.py",
     deps = [
         ":build_utils",
-        "@bazel_tools//tools/python/runfiles",
         "@pypi//build",
         "@pypi//setuptools",
         "@pypi//wheel",
+        "@rules_python//python/runfiles",
     ],
 )
 
