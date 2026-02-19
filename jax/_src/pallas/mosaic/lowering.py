@@ -4330,7 +4330,9 @@ def _touch_lowering_rule(ctx: LoweringRuleContext, x: jax.Array):
   return []
 
 
-@register_lowering_rule(tpu_primitives.trace_value_p)
+@register_lowering_rule(
+    tpu_primitives.trace_value_p, kernel_types=[*tpu_core.KernelType]
+)
 def _trace_value_lowering_rule(ctx: LoweringRuleContext, value, *, label: str):
   """Lower trace_value to tpu.trace_value."""
   del ctx

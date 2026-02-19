@@ -19,6 +19,7 @@ load(
     "jax_multiplatform_test",
     "jax_py_test",
     "py_deps",
+    "pytype_strict_library",
 )
 
 licenses(["notice"])
@@ -1498,11 +1499,30 @@ jax_multiplatform_test(
     srcs = ["tpu_trace_value_test.py"],
     enable_backends = ["tpu"],
     enable_configs = [
+        "tpu_v5p",
+        "tpu_v6e",
         "tpu_7x",
     ],
     deps = [
         "//jax/experimental:pallas",
         "//jax/experimental:pallas_tpu",
+        "//jax/experimental:pallas_tpu_sc",
+    ] + py_deps([
+        "absl/testing",
+    ]),
+)
+
+pytype_strict_library(
+    name = "tpu_trace_value_test_lib",
+    testonly = 1,
+    srcs = ["tpu_trace_value_test.py"],
+    visibility = ["//tests/pallas:__subpackages__"],
+    deps = [
+        "//jax",
+        "//jax/_src:test_util",
+        "//jax/experimental:pallas",
+        "//jax/experimental:pallas_tpu",
+        "//jax/experimental:pallas_tpu_sc",
     ] + py_deps([
         "absl/testing",
     ]),
