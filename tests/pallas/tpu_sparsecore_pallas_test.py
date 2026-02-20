@@ -64,7 +64,7 @@ class PallasSCTest(jtu.JaxTestCase):
         pl.pallas_call,
         **kwargs,
         compiler_params=pltpu.CompilerParams(
-            kernel_type=pltpu.KernelType.SC_VECTOR_SUBCORE,
+            kernel_type=pltpu.CoreType.SC_VECTOR_SUBCORE,
             use_tc_tiling_on_sc=self.USE_TC_TILING,
         ),
     )
@@ -1095,7 +1095,7 @@ class VectorSubcoreTest(PallasSCTest):
     @functools.partial(
         pl.pallas_call,
         compiler_params=pltpu.CompilerParams(
-            kernel_type=pltpu.KernelType.SC_VECTOR_SUBCORE,
+            kernel_type=pltpu.CoreType.SC_VECTOR_SUBCORE,
             dimension_semantics=["subcore_parallel"],
         ),
         out_shape=(
@@ -1539,7 +1539,7 @@ class VectorSubcoreTest(PallasSCTest):
         pl.pallas_call,
         grid=nsubcores,
         compiler_params=pltpu.CompilerParams(
-            kernel_type=pltpu.KernelType.SC_VECTOR_SUBCORE,
+            kernel_type=pltpu.CoreType.SC_VECTOR_SUBCORE,
             dimension_semantics=["subcore_parallel"],
             use_tc_tiling_on_sc=self.USE_TC_TILING,
         ),
@@ -1616,7 +1616,7 @@ class VectorSubcoreTest(PallasSCTest):
         pl.pallas_call,
         grid=mesh.num_subcores,
         compiler_params=pltpu.CompilerParams(
-            kernel_type=pltpu.KernelType.SC_VECTOR_SUBCORE,
+            kernel_type=pltpu.CoreType.SC_VECTOR_SUBCORE,
             dimension_semantics=["subcore_parallel"],
             use_tc_tiling_on_sc=self.USE_TC_TILING,
         ),
@@ -1850,7 +1850,7 @@ class ScalarSubcoreTest(PallasSCTest):
         pl.pallas_call,
         out_shape=jax.ShapeDtypeStruct((self.num_lanes,), jnp.int32),
         compiler_params=pltpu.CompilerParams(
-            kernel_type=pltpu.KernelType.SC_SCALAR_SUBCORE,
+            kernel_type=pltpu.CoreType.SC_SCALAR_SUBCORE,
             use_tc_tiling_on_sc=self.USE_TC_TILING,
         ),
     )
@@ -2004,7 +2004,7 @@ class ScalarSubcoreTest(PallasSCTest):
     @functools.partial(
         pl.pallas_call,
         compiler_params=pltpu.CompilerParams(
-            kernel_type=pltpu.KernelType.SC_SCALAR_SUBCORE,
+            kernel_type=pltpu.CoreType.SC_SCALAR_SUBCORE,
         ),
         grid=(1,),
         in_specs=[pl.BlockSpec(memory_space=pltpu.HBM)],
@@ -2202,7 +2202,7 @@ class PallasSparsecoreAsyncTest(PallasSCTest):
           grid=(1,),
           compiler_params=pltpu.CompilerParams(
               dimension_semantics=["core_parallel"],
-              kernel_type=pltpu.KernelType.SC_SCALAR_SUBCORE,
+              kernel_type=pltpu.CoreType.SC_SCALAR_SUBCORE,
               use_tc_tiling_on_sc=self.USE_TC_TILING,
           ),
       )()

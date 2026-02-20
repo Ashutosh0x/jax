@@ -188,7 +188,7 @@ class LoweringContext:
   block_shapes: list[tuple[int | pallas_core.Squeezed, ...]]
   name_stack: source_info_util.NameStack
   mesh_context: pallas_utils.MeshInfo | None
-  kernel_type: tpu_core.KernelType
+  kernel_type: tpu_core.CoreType
   traceback_caches: mlir.TracebackCaches
   forward_compatible: bool
   backend: xla_client.Client | None
@@ -272,7 +272,7 @@ class LoweringRuleContext:
 
 
 def _memory_space_to_tpu_memory_space(
-    memory_space: AnyMemorySpace | None, kernel_type: tpu_core.KernelType
+    memory_space: AnyMemorySpace | None, kernel_type: tpu_core.CoreType
 ) -> TPUMemorySpace | Literal[ANY]:
   if memory_space == jax_core.MemorySpace.Device:
     return ANY
@@ -282,9 +282,9 @@ def _memory_space_to_tpu_memory_space(
       # We pick VMEM as the default one when no memory space is
       # specified
       match kernel_type:
-        case tpu_core.KernelType.TC | tpu_core.KernelType.SC_VECTOR_SUBCORE:
+        case tpu_core.CoreType.TC | tpu_core.CoreType.SC_VECTOR_SUBCORE:
           return TPUMemorySpace.VMEM
-        case tpu_core.KernelType.SC_SCALAR_SUBCORE:
+        case tpu_core.CoreType.SC_SCALAR_SUBCORE:
           return TPUMemorySpace.SMEM
         case _:
           raise ValueError(f"Unsupported kernel type: {kernel_type}")
@@ -308,7 +308,7 @@ def _memory_space_to_tpu_memory_space(
 
 def _memory_space_to_mosaic_attribute(
     memory_space: AnyMemorySpace | None,
-    kernel_type: tpu_core.KernelType,
+    kernel_type: tpu_core.CoreType,
 ) -> ir.Attribute:
   tpu_memory_space = _memory_space_to_tpu_memory_space(
       memory_space, kernel_type
@@ -348,7 +348,7 @@ def aval_to_ir_type(
     memory_space: AnyMemorySpace | None = None,
     is_kernel_boundary: bool = False,
     allow_extended_types: bool = True,
-    kernel_type: tpu_core.KernelType,
+    kernel_type: tpu_core.CoreType,
 ):
   if allow_extended_types and should_physicalize_dtype(aval.dtype):
     if isinstance(aval, state.AbstractRef):
@@ -420,7 +420,7 @@ def ir_constant(x: Any, mlir_type: ir.Type | None = None) -> ir.Value:
   raise NotImplementedError(x.dtype)
 
 
-lowering_rules = {kernel_type: {} for kernel_type in tpu_core.KernelType}
+lowering_rules = {kernel_type: {} for kernel_type in tpu_core.CoreType}
 skip_mlir_conversions = set()
 
 
@@ -430,7 +430,7 @@ T = TypeVar("T")
 def register_lowering_rule(
     prim: jax_core.Primitive,
     *,
-    kernel_types: Collection[tpu_core.KernelType] = (tpu_core.KernelType.TC,),
+    kernel_types: Collection[tpu_core.CoreType] = (tpu_core.CoreType.TC,),
     ensure_mlir_values: bool = True,
 ) -> Callable[[T], T]:
   def decorator(rule: T) -> T:
@@ -483,7 +483,7 @@ class MosaicGridMapping:
       dimension_semantics: Sequence[tpu_core.DimensionSemantics] | None,
       mesh: mesh_lib.Mesh | None,
       dynamic_shape_replacement_fn: DynamicShapeReplacementFn,
-      kernel_type: tpu_core.KernelType,
+      kernel_type: tpu_core.CoreType,
   ):
     self.grid = grid_mapping.grid
     self.grid_names = grid_mapping.grid_names
@@ -649,7 +649,7 @@ def _check_block_mappings(
     block_mappings: tuple[pallas_core.BlockMapping, ...],
     lowering_context: mlir.LoweringRuleContext,
     debug_info: jax_core.DebugInfo,
-    kernel_type: tpu_core.KernelType,
+    kernel_type: tpu_core.CoreType,
 ) -> None:
   del lowering_context  # originally needed for forward compat
   for bm in block_mappings:
@@ -755,7 +755,7 @@ def lower_jaxpr_to_module(
     jaxpr: jax_core.Jaxpr,
     *,
     dimension_semantics: Sequence[tpu_core.DimensionSemantics] | None,
-    kernel_type: tpu_core.KernelType,
+    kernel_type: tpu_core.CoreType,
     mesh: mesh_lib.Mesh | None = None,
     dynamic_shape_replacement_enabled: bool = False,
 ) -> ir.Module:
@@ -782,7 +782,7 @@ def lower_jaxpr_into_module(
     *,
     name: str,
     dimension_semantics: Sequence[tpu_core.DimensionSemantics] | None,
-    kernel_type: tpu_core.KernelType,
+    kernel_type: tpu_core.CoreType,
     mesh: mesh_lib.Mesh | None = None,
     dynamic_shape_replacement_enabled: bool = False,
 ) -> None:
@@ -1068,7 +1068,7 @@ def lower_jaxpr_to_transform_func(
     *,
     name: str,
     mosaic_grid_mapping: MosaicGridMapping,
-    kernel_type: tpu_core.KernelType,
+    kernel_type: tpu_core.CoreType,
     forward_compatible: bool,
     backend: Any | None,
     dynamic_shape_replacement_fn: DynamicShapeReplacementFn,
@@ -1126,7 +1126,7 @@ def lower_jaxpr_to_func(
     *,
     mosaic_grid_mapping: MosaicGridMapping,
     name: str,
-    kernel_type: tpu_core.KernelType,
+    kernel_type: tpu_core.CoreType,
     forward_compatible: bool,
     backend: Any | None,
     dynamic_shape_replacement_fn: DynamicShapeReplacementFn,
@@ -1968,7 +1968,7 @@ def _masked_swap_lowering_rule(
 
 
 @register_lowering_rule(
-    primitives.multiple_of_p, kernel_types=[*tpu_core.KernelType]
+    primitives.multiple_of_p, kernel_types=[*tpu_core.CoreType]
 )
 def _multiple_of_lowering_rule(ctx: LoweringRuleContext, val, *, values):
   del ctx
@@ -2060,7 +2060,7 @@ _reduce_sum_lowering_rule = reduce_lowering_rule(
 register_lowering_rule(lax.reduce_sum_p)(_reduce_sum_lowering_rule)
 
 
-@register_lowering_rule(lax.reduce_and_p, kernel_types=[*tpu_core.KernelType])
+@register_lowering_rule(lax.reduce_and_p, kernel_types=[*tpu_core.CoreType])
 def _reduce_and_lowering_rule(ctx: LoweringRuleContext, x, *, axes):
   def _proxy_reduce(arg, *, axes):
     # Mosaic currently only supports float reductions, so we cast the boolean
@@ -2074,7 +2074,7 @@ def _reduce_and_lowering_rule(ctx: LoweringRuleContext, x, *, axes):
   return proxy_lowering(ctx, x, axes=axes)
 
 
-@register_lowering_rule(lax.reduce_or_p, kernel_types=[*tpu_core.KernelType])
+@register_lowering_rule(lax.reduce_or_p, kernel_types=[*tpu_core.CoreType])
 def _reduce_or_lowering_rule(ctx: LoweringRuleContext, x, *, axes):
   def _proxy_reduce(arg, *, axes):
     # Mosaic currently only supports float reductions, so we cast the boolean
@@ -2099,7 +2099,7 @@ def _broadcast_to_lowering_rule(
 
 
 @register_lowering_rule(
-    lax.broadcast_in_dim_p, kernel_types=[*tpu_core.KernelType]
+    lax.broadcast_in_dim_p, kernel_types=[*tpu_core.CoreType]
 )
 def _broadcast_in_dim_lowering_rule(
     ctx: LoweringRuleContext, val, *, shape, broadcast_dimensions, sharding
@@ -2350,7 +2350,7 @@ def _convert_helper(x: Array, *, to_dtype: jnp.dtype) -> Array:
 
 
 @register_lowering_rule(
-    lax.convert_element_type_p, kernel_types=[*tpu_core.KernelType]
+    lax.convert_element_type_p, kernel_types=[*tpu_core.CoreType]
 )
 def _convert_element_type_lowering_rule(
     ctx: LoweringRuleContext, x, *, new_dtype, weak_type, sharding
@@ -2403,7 +2403,7 @@ def _convert_element_type_lowering_rule(
                    multiple_results=False)(ctx, x)
 
 
-@register_lowering_rule(lax.reshape_p, kernel_types=[*tpu_core.KernelType])
+@register_lowering_rule(lax.reshape_p, kernel_types=[*tpu_core.CoreType])
 def _reshape_lowering_rule(ctx: LoweringRuleContext, x, new_sizes, dimensions,
                            sharding):
   if dimensions is not None:
@@ -2417,7 +2417,7 @@ def _reshape_lowering_rule(ctx: LoweringRuleContext, x, new_sizes, dimensions,
   return vector.shape_cast(ctx.aval_to_ir_type(ctx.avals_out[0]), x)
 
 
-@register_lowering_rule(lax.squeeze_p, kernel_types=[*tpu_core.KernelType])
+@register_lowering_rule(lax.squeeze_p, kernel_types=[*tpu_core.CoreType])
 def _squeeze_lowering_rule(ctx: LoweringRuleContext, x, dimensions):
   del dimensions  # Unused.
   (aval_in,) = ctx.avals_in
@@ -2433,13 +2433,13 @@ def _squeeze_lowering_rule(ctx: LoweringRuleContext, x, dimensions):
   return vector.shape_cast(ctx.aval_to_ir_type(ctx.avals_out[0]), x)
 
 
-@register_lowering_rule(lax.concatenate_p, kernel_types=[*tpu_core.KernelType])
+@register_lowering_rule(lax.concatenate_p, kernel_types=[*tpu_core.CoreType])
 def _concatenate_lowering_rule(ctx: LoweringRuleContext, *xs, dimension):
   del ctx  # Unused.
   return tpu.concatenate(xs, dimension=dimension)
 
 
-@register_lowering_rule(lax.split_p, kernel_types=[*tpu_core.KernelType])
+@register_lowering_rule(lax.split_p, kernel_types=[*tpu_core.CoreType])
 def _split_lowering_rule(
     ctx: LoweringRuleContext, x, *, sizes, axis
 ):
@@ -2584,7 +2584,7 @@ def _bcast(
 
 
 @register_lowering_rule(
-    lax.add_p, kernel_types=[*tpu_core.KernelType], ensure_mlir_values=False
+    lax.add_p, kernel_types=[*tpu_core.CoreType], ensure_mlir_values=False
 )
 @register_lowering_rule(ad_util.add_any_p, ensure_mlir_values=False)
 def _add_lowering_rule(ctx: LoweringRuleContext, x, y):
@@ -2635,7 +2635,7 @@ def _stop_gradient_lowering_rule(_: LoweringRuleContext, x):
   return x
 
 @register_lowering_rule(
-    lax.max_p, ensure_mlir_values=False, kernel_types=[*tpu_core.KernelType]
+    lax.max_p, ensure_mlir_values=False, kernel_types=[*tpu_core.CoreType]
 )
 def _max_lowering_rule(ctx: LoweringRuleContext, x, y):
   x, y = _bcast(
@@ -2657,7 +2657,7 @@ def _max_lowering_rule(ctx: LoweringRuleContext, x, y):
 
 
 @register_lowering_rule(
-    lax.min_p, ensure_mlir_values=False, kernel_types=[*tpu_core.KernelType]
+    lax.min_p, ensure_mlir_values=False, kernel_types=[*tpu_core.CoreType]
 )
 def _min_lowering_rule(ctx: LoweringRuleContext, x, y):
   x, y = _bcast(
@@ -2719,7 +2719,7 @@ def _argmin_lowering_rule(ctx: LoweringRuleContext, x, axes, index_dtype):
   )
 
 @register_lowering_rule(
-    lax.sub_p, kernel_types=[*tpu_core.KernelType], ensure_mlir_values=False
+    lax.sub_p, kernel_types=[*tpu_core.CoreType], ensure_mlir_values=False
 )
 def _sub_lowering_rule(ctx: LoweringRuleContext, x, y):
   x, y = _bcast(
@@ -2739,7 +2739,7 @@ def _sub_lowering_rule(ctx: LoweringRuleContext, x, y):
 
 
 @register_lowering_rule(
-    lax.mul_p, kernel_types=[*tpu_core.KernelType], ensure_mlir_values=False
+    lax.mul_p, kernel_types=[*tpu_core.CoreType], ensure_mlir_values=False
 )
 def _mul_lowering_rule(ctx: LoweringRuleContext, x, y):
   x, y = _bcast(
@@ -2759,7 +2759,7 @@ def _mul_lowering_rule(ctx: LoweringRuleContext, x, y):
 
 
 @register_lowering_rule(
-    lax.div_p, kernel_types=[*tpu_core.KernelType], ensure_mlir_values=False
+    lax.div_p, kernel_types=[*tpu_core.CoreType], ensure_mlir_values=False
 )
 def _div_lowering_rule(ctx: LoweringRuleContext, x, y):
   x, y = _bcast(
@@ -2781,7 +2781,7 @@ def _div_lowering_rule(ctx: LoweringRuleContext, x, y):
 
 
 @register_lowering_rule(
-    lax.rem_p, kernel_types=[*tpu_core.KernelType], ensure_mlir_values=False
+    lax.rem_p, kernel_types=[*tpu_core.CoreType], ensure_mlir_values=False
 )
 def _rem_lowering_rule(ctx: LoweringRuleContext, x, y):
   x, y = _bcast(
@@ -2802,7 +2802,7 @@ def _rem_lowering_rule(ctx: LoweringRuleContext, x, y):
   raise NotImplementedError(aval_out.dtype)
 
 
-@register_lowering_rule(lax.abs_p, kernel_types=[*tpu_core.KernelType])
+@register_lowering_rule(lax.abs_p, kernel_types=[*tpu_core.CoreType])
 def _abs_lowering_rule(ctx: LoweringRuleContext, x):
   (aval_out,) = ctx.avals_out
   if jnp.issubdtype(aval_out.dtype, jnp.integer):
@@ -2813,7 +2813,7 @@ def _abs_lowering_rule(ctx: LoweringRuleContext, x):
 
 
 @register_lowering_rule(
-    lax.neg_p, kernel_types=[*tpu_core.KernelType], ensure_mlir_values=False
+    lax.neg_p, kernel_types=[*tpu_core.CoreType], ensure_mlir_values=False
 )
 def _neg_lowering_rule(ctx: LoweringRuleContext, x):
   (x_aval,) = ctx.avals_in
@@ -2824,7 +2824,7 @@ def _neg_lowering_rule(ctx: LoweringRuleContext, x):
   return _sub_lowering_rule(new_ctx, np.array(0, dtype=x_aval.dtype), x)
 
 
-@register_lowering_rule(lax.sign_p, kernel_types=[*tpu_core.KernelType])
+@register_lowering_rule(lax.sign_p, kernel_types=[*tpu_core.CoreType])
 def _sign_lowering_rule(ctx: LoweringRuleContext, x):
   return lower_fun(
       pallas_utils.sign_lowering_helper, multiple_results=False,
@@ -2859,7 +2859,7 @@ def _square_lowering_rule(ctx: LoweringRuleContext, x):
   return arith.mulf(x, x)
 
 
-@register_lowering_rule(lax.exp_p, kernel_types=[*tpu_core.KernelType])
+@register_lowering_rule(lax.exp_p, kernel_types=[*tpu_core.CoreType])
 def _exp_lowering_rule(ctx: LoweringRuleContext, x, accuracy):
   if accuracy is not None:
     raise NotImplementedError("Not implemented: accuracy")
@@ -3135,13 +3135,13 @@ def _cmp_lowering_rule(primitive, ctx: LoweringRuleContext, x, y):
 
 
 for prim in [lax.eq_p, lax.ne_p, lax.lt_p, lax.le_p, lax.gt_p, lax.ge_p]:
-  register_lowering_rule(prim, kernel_types=[*tpu_core.KernelType])(
+  register_lowering_rule(prim, kernel_types=[*tpu_core.CoreType])(
       functools.partial(_cmp_lowering_rule, prim)
   )
 
 
 @register_lowering_rule(
-    lax.and_p, kernel_types=[*tpu_core.KernelType], ensure_mlir_values=False
+    lax.and_p, kernel_types=[*tpu_core.CoreType], ensure_mlir_values=False
 )
 def _and_lowering_rule(ctx: LoweringRuleContext, x, y):
   x, y = _bcast(
@@ -3163,7 +3163,7 @@ def _is_finite_lowering_rule(ctx: LoweringRuleContext, x):
 
 
 @register_lowering_rule(
-    lax.or_p, kernel_types=[*tpu_core.KernelType], ensure_mlir_values=False
+    lax.or_p, kernel_types=[*tpu_core.CoreType], ensure_mlir_values=False
 )
 def _or_lowering_rule(ctx: LoweringRuleContext, x, y):
   x, y = _bcast(
@@ -3177,7 +3177,7 @@ def _or_lowering_rule(ctx: LoweringRuleContext, x, y):
   return arith.ori(x, y)
 
 
-@register_lowering_rule(lax.not_p, kernel_types=[*tpu_core.KernelType])
+@register_lowering_rule(lax.not_p, kernel_types=[*tpu_core.CoreType])
 def _not_lowering_rule(ctx: LoweringRuleContext, x):
   # The primitive not_p is lowered to
   # https://github.com/openxla/stablehlo/blob/main/docs/spec.md#not
@@ -3200,7 +3200,7 @@ def _not_lowering_rule(ctx: LoweringRuleContext, x):
   return arith.xori(x, minus_one)
 
 
-@register_lowering_rule(lax.select_n_p, kernel_types=[*tpu_core.KernelType])
+@register_lowering_rule(lax.select_n_p, kernel_types=[*tpu_core.CoreType])
 def _select_n_lowering_rule(ctx: LoweringRuleContext, pred, x, *args):
   if len(args) > 1:
     raise NotImplementedError("select_n only supported with <= 2 arguments")
@@ -3272,7 +3272,7 @@ def _lower_jaxpr_to_for_loop(ctx: LoweringRuleContext,
 
 
 @register_lowering_rule(
-    lax.scan_p, kernel_types=[*tpu_core.KernelType], ensure_mlir_values=False
+    lax.scan_p, kernel_types=[*tpu_core.CoreType], ensure_mlir_values=False
 )
 def _scan_lowering_rule(
     ctx: LoweringRuleContext,
@@ -3346,7 +3346,7 @@ def _lower_while_via_fori(
   return [ub, ub, *for_out]
 
 
-@register_lowering_rule(lax.while_p, kernel_types=[*tpu_core.KernelType])
+@register_lowering_rule(lax.while_p, kernel_types=[*tpu_core.CoreType])
 def _while_lowering_rule(
     ctx: LoweringRuleContext,
     *args,
@@ -3407,7 +3407,7 @@ def _while_lowering_rule(
   return list(while_op.results)
 
 
-@register_lowering_rule(lax.cond_p, kernel_types=[*tpu_core.KernelType])
+@register_lowering_rule(lax.cond_p, kernel_types=[*tpu_core.CoreType])
 def _cond_lowering_rule(ctx: LoweringRuleContext, *args, branches, **params):
   index, *args = args
   constant_index = _fold_and_get_constant_value(index)
@@ -3443,7 +3443,7 @@ def _cond_lowering_rule(ctx: LoweringRuleContext, *args, branches, **params):
   return if_op.results
 
 
-@register_lowering_rule(pjit.jit_p, kernel_types=[*tpu_core.KernelType])
+@register_lowering_rule(pjit.jit_p, kernel_types=[*tpu_core.CoreType])
 def _pjit_lowering_rule(ctx: LoweringRuleContext, *args, jaxpr, **_):
   lowering_context = ctx.lowering_context.replace(block_shapes=ctx.block_shapes)
   return jaxpr_subcomp(lowering_context, jaxpr.jaxpr, *args)
@@ -3496,7 +3496,7 @@ def _debug_callback_lowering_rule(ctx: LoweringRuleContext, *args, **kwargs):
 
 
 @register_lowering_rule(
-    primitives.program_id_p, kernel_types=[*tpu_core.KernelType]
+    primitives.program_id_p, kernel_types=[*tpu_core.CoreType]
 )
 def _program_id_lowering_rule(ctx: LoweringRuleContext, *, axis: int):
   if ctx.lowering_context.user_grid_indices is None:
@@ -3513,7 +3513,7 @@ def _program_id_lowering_rule(ctx: LoweringRuleContext, *, axis: int):
 
 
 @register_lowering_rule(
-    primitives.num_programs_p, kernel_types=[*tpu_core.KernelType]
+    primitives.num_programs_p, kernel_types=[*tpu_core.CoreType]
 )
 def _num_programs_lowering_rule(ctx: LoweringRuleContext, *, axis: int):
   vmapped_axes = set(ctx.lowering_context.vmapped_dims)
@@ -3554,7 +3554,7 @@ def _roll_lowering_rule(
   )
 
 
-@register_lowering_rule(lax.slice_p, kernel_types=[*tpu_core.KernelType])
+@register_lowering_rule(lax.slice_p, kernel_types=[*tpu_core.CoreType])
 def _slice_lowering_rule(
     ctx: LoweringRuleContext, x, limit_indices, start_indices, strides
 ):
@@ -3570,7 +3570,7 @@ def _slice_lowering_rule(
 
 
 @register_lowering_rule(
-    lax.xor_p, kernel_types=[*tpu_core.KernelType], ensure_mlir_values=False
+    lax.xor_p, kernel_types=[*tpu_core.CoreType], ensure_mlir_values=False
 )
 def _xor_lowering_rule(ctx: LoweringRuleContext, x, y):
   x, y = _bcast(
@@ -3586,7 +3586,7 @@ def _xor_lowering_rule(ctx: LoweringRuleContext, x, y):
 
 @register_lowering_rule(
     lax.shift_left_p,
-    kernel_types=[*tpu_core.KernelType],
+    kernel_types=[*tpu_core.CoreType],
     ensure_mlir_values=False,
 )
 def _shift_left_lowering_rule(ctx: LoweringRuleContext, x, d):
@@ -3603,7 +3603,7 @@ def _shift_left_lowering_rule(ctx: LoweringRuleContext, x, d):
 
 @register_lowering_rule(
     lax.shift_right_arithmetic_p,
-    kernel_types=[*tpu_core.KernelType],
+    kernel_types=[*tpu_core.CoreType],
     ensure_mlir_values=False,
 )
 def _shift_right_arithmetic_lowering_rule(ctx: LoweringRuleContext, x, d):
@@ -3620,7 +3620,7 @@ def _shift_right_arithmetic_lowering_rule(ctx: LoweringRuleContext, x, d):
 
 @register_lowering_rule(
     lax.shift_right_logical_p,
-    kernel_types=[*tpu_core.KernelType],
+    kernel_types=[*tpu_core.CoreType],
     ensure_mlir_values=False,
 )
 def _shift_right_logical_lowering_rule(ctx: LoweringRuleContext, x, d):
@@ -3721,7 +3721,7 @@ def _bitcast_lowering_rule(ctx: LoweringRuleContext, x, *, ty):
 
 
 @register_lowering_rule(
-    lax.bitcast_convert_type_p, kernel_types=[*tpu_core.KernelType]
+    lax.bitcast_convert_type_p, kernel_types=[*tpu_core.CoreType]
 )
 def _bitcast_convert_type_lowering_rule(
     ctx: LoweringRuleContext, x, *, new_dtype
@@ -3819,7 +3819,7 @@ def _device_id_to_logical(
 
 
 @register_lowering_rule(
-    primitives.semaphore_read_p, kernel_types=[*tpu_core.KernelType]
+    primitives.semaphore_read_p, kernel_types=[*tpu_core.CoreType]
 )
 def _semaphore_read_lowering_rule(
     ctx: LoweringRuleContext,
@@ -3844,7 +3844,7 @@ def _semaphore_read_lowering_rule(
 
 
 @register_lowering_rule(
-    primitives.semaphore_signal_p, kernel_types=[*tpu_core.KernelType]
+    primitives.semaphore_signal_p, kernel_types=[*tpu_core.CoreType]
 )
 def _semaphore_signal_lowering_rule(
     ctx: LoweringRuleContext,
@@ -3870,7 +3870,7 @@ def _semaphore_signal_lowering_rule(
 
 
 @register_lowering_rule(
-    primitives.semaphore_wait_p, kernel_types=[*tpu_core.KernelType]
+    primitives.semaphore_wait_p, kernel_types=[*tpu_core.CoreType]
 )
 def _semaphore_wait_lowering_rule(ctx: LoweringRuleContext, *args, args_tree):
   sem_aval, _, _, _ = tree_util.tree_unflatten(args_tree, ctx.avals_in)
@@ -3971,7 +3971,7 @@ def _dma_wait_lowering_rule(ctx: LoweringRuleContext, *args, tree,
   return []
 
 
-@register_lowering_rule(lax.axis_index_p, kernel_types=[*tpu_core.KernelType])
+@register_lowering_rule(lax.axis_index_p, kernel_types=[*tpu_core.CoreType])
 def _axis_index_rule(ctx: LoweringRuleContext, *, axis_name: Hashable):
   grid_names = ctx.lowering_context.grid_names
   if grid_names and axis_name in grid_names:
@@ -3993,7 +3993,7 @@ def _axis_index_rule(ctx: LoweringRuleContext, *, axis_name: Hashable):
 
 
 @register_lowering_rule(
-    tpu_primitives.get_barrier_semaphore_p, kernel_types=[*tpu_core.KernelType]
+    tpu_primitives.get_barrier_semaphore_p, kernel_types=[*tpu_core.CoreType]
 )
 def _get_barrier_semaphore_rule(ctx: LoweringRuleContext):
   memref_type = ctx.aval_to_ir_type(ctx.avals_out[0])
@@ -4201,7 +4201,7 @@ def _join_key_lowering_rule(ctx: LoweringRuleContext, *scalars, impl):
   return KeyScalarBundle(scalars=scalars, key_shape=tuple(impl.key_shape))
 
 
-@register_lowering_rule(checkify.check_p, kernel_types=[*tpu_core.KernelType])
+@register_lowering_rule(checkify.check_p, kernel_types=[*tpu_core.CoreType])
 def _check_lowering_rule(
     ctx: LoweringRuleContext, *err_args, err_tree, debug
 ):

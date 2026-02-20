@@ -106,7 +106,7 @@ class DebugCheckTest(jtu.JaxTestCase):
         pl.pallas_call,
         out_shape=x,
         compiler_params=pltpu.CompilerParams(
-            kernel_type=pltpu.KernelType.SC_VECTOR_SUBCORE
+            kernel_type=pltpu.CoreType.SC_VECTOR_SUBCORE
         ),
     )
     def kernel(_):
@@ -144,7 +144,7 @@ class DebugCheckTest(jtu.JaxTestCase):
         pl.pallas_call,
         out_shape=x,
         compiler_params=pltpu.CompilerParams(
-            kernel_type=pltpu.KernelType.SC_VECTOR_SUBCORE
+            kernel_type=pltpu.CoreType.SC_VECTOR_SUBCORE
         ),
     )
     def kernel(x_ref, indices_ref, o_ref):

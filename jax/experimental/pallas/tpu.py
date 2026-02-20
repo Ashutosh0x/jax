@@ -17,14 +17,14 @@ import typing
 
 from jax._src.pallas.einshape import einshape as einshape
 from jax._src.pallas.mosaic import core as core
+from jax._src.pallas.mosaic.core import CoreType as CoreType
 from jax._src.pallas.mosaic.core import create_tensorcore_mesh as create_tensorcore_mesh
 from jax._src.pallas.mosaic.core import dma_semaphore as dma_semaphore
 from jax._src.pallas.mosaic.core import GridDimensionSemantics as GridDimensionSemantics
-from jax._src.pallas.mosaic.core import KernelType as KernelType
+from jax._src.pallas.mosaic.core import MemorySpace as MemorySpace
 from jax._src.pallas.mosaic.core import PrefetchScalarGridSpec as PrefetchScalarGridSpec
 from jax._src.pallas.mosaic.core import SemaphoreType as SemaphoreType
 from jax._src.pallas.mosaic.core import SideEffectType as SideEffectType
-from jax._src.pallas.mosaic.core import MemorySpace as MemorySpace
 from jax._src.pallas.mosaic.core import CompilerParams as CompilerParams
 from jax._src.pallas.mosaic.helpers import sync_copy as sync_copy
 from jax._src.pallas.mosaic.helpers import core_barrier as core_barrier
@@ -113,12 +113,18 @@ _deprecations = {
         "pltpu.repeat is deprecated, use jnp.tile instead.",
         _deprecated_repeat
     ),
+    # Added Feb 19, 2026
+    "KernelType": (
+        "pltpu.KernelType is deprecated, use pltpu.CoreType instead.",
+        CoreType
+    ),
 }
 
 if typing.TYPE_CHECKING:
   delay = pl_primitives.delay
   ANY = GeneralMemorySpace.ANY
   repeat = _deprecated_repeat
+  KernelType = CoreType
 else:
   from jax._src.deprecations import deprecation_getattr as _deprecation_getattr
   __getattr__ = _deprecation_getattr(__name__, _deprecations)

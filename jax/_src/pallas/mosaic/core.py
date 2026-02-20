@@ -43,7 +43,7 @@ no_block_spec = pallas_core.no_block_spec
 _out_shape_to_aval_mapping = pallas_core._out_shape_to_aval_mapping
 
 
-class KernelType(enum.Enum):
+class CoreType(enum.Enum):
   TC = 0
   SC_SCALAR_SUBCORE = 1
   SC_VECTOR_SUBCORE = 2
@@ -114,7 +114,7 @@ class CompilerParams(pallas_core.CompilerParams):
   flags: dict[str, Any] | None = None
   internal_scratch_in_bytes: int | None = None
   serialization_format: int = 1
-  kernel_type: KernelType = KernelType.TC
+  kernel_type: CoreType = CoreType.TC
   disable_bounds_checks: bool = False
   skip_device_barrier: bool = False
   allow_collective_id_without_custom_barrier: bool = False
@@ -131,7 +131,7 @@ class CompilerParams(pallas_core.CompilerParams):
       flags: Mapping[str, Any] | None = None,
       internal_scratch_in_bytes: int | None = None,
       serialization_format: int = 1,
-      kernel_type: KernelType = KernelType.TC,
+      kernel_type: CoreType = CoreType.TC,
       disable_bounds_checks: bool = False,
       skip_device_barrier: bool = False,
       allow_collective_id_without_custom_barrier: bool = False,
@@ -190,7 +190,7 @@ class MemorySpace(enum.Enum):
   def from_type(self, ty):
     return pallas_core.MemoryRef(ty, memory_space=self)
 
-  def __call__(self, shape: Sequence[int], dtype: jnp.dtype):
+  def __call__(self, shape: Sequence[int], dtype: jnp.dtype[Any]):
     # A convenience function for constructing MemoryRef types of ShapedArrays.
     return self.from_type(jax_core.ShapedArray(tuple(shape), dtype))
 
@@ -283,8 +283,8 @@ class TensorCoreMesh:
     )
 
   @property
-  def kernel_type(self) -> KernelType:
-    return KernelType.TC
+  def kernel_type(self) -> CoreType:
+    return CoreType.TC
 
   @property
   def default_memory_space(self) -> pallas_core.MemorySpace:

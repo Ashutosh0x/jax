@@ -466,12 +466,12 @@ def subcore_barrier():
   """Blocks until all subcores on the same core reach this instruction.
 
   The barrier must be used with the vector subcore, either via
-  :class:jax.experimental.pallas.tpu_sc.VectorSubcoreMesh or by specifying
-  ```
-  pltpu.CompilerParams(
-      kernel_type=pltpu.KernelType.SC_VECTOR_SUBCORE,
-      dimension_semantics[..., "subcore_parallel", ...])
-  ```
+  :class:jax.experimental.pallas.tpu_sc.VectorSubcoreMesh or by passing::
+
+      pltpu.CompilerParams(
+          kernel_type=pltpu.CoreType.SC_VECTOR_SUBCORE,
+          dimension_semantics[..., "subcore_parallel", ...])
+
   to ``pallas_call``.
   """
   barrier_p.bind()
@@ -586,13 +586,13 @@ def _reduce_op_lowering_rule(ctx: sc_lowering.LoweringRuleContext, x, axes,
       [], [vec_dim - 1])
 
 sc_lowering.register_lowering_rule(
-    lax.reduce_max_p, kernel_types=[tpu_core.KernelType.SC_VECTOR_SUBCORE])(
+    lax.reduce_max_p, kernel_types=[tpu_core.CoreType.SC_VECTOR_SUBCORE])(
     functools.partial(_reduce_op_lowering_rule, reduction_kind="max"))
 sc_lowering.register_lowering_rule(
-    lax.reduce_min_p, kernel_types=[tpu_core.KernelType.SC_VECTOR_SUBCORE])(
+    lax.reduce_min_p, kernel_types=[tpu_core.CoreType.SC_VECTOR_SUBCORE])(
     functools.partial(_reduce_op_lowering_rule, reduction_kind="min"))
 sc_lowering.register_lowering_rule(
-    lax.reduce_sum_p, kernel_types=[tpu_core.KernelType.SC_VECTOR_SUBCORE])(
+    lax.reduce_sum_p, kernel_types=[tpu_core.CoreType.SC_VECTOR_SUBCORE])(
     functools.partial(_reduce_op_lowering_rule, reduction_kind="sum"))
 
 

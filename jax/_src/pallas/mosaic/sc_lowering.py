@@ -70,7 +70,7 @@ def lower_jaxpr_to_module(
     jaxpr: jax_core.Jaxpr,
     *,
     dimension_semantics: Sequence[tpu_core.DimensionSemantics] | None,
-    kernel_type: tpu_core.KernelType,
+    kernel_type: tpu_core.CoreType,
     mesh: mesh_lib.Mesh | None = None,
     dynamic_shape_replacement_enabled: bool = False,
 ) -> ir.Module:
@@ -98,7 +98,7 @@ def lower_jaxpr_into_module(
     *,
     name: str,
     dimension_semantics: Sequence[tpu_core.DimensionSemantics] | None,
-    kernel_type: tpu_core.KernelType,
+    kernel_type: tpu_core.CoreType,
     mesh: mesh_lib.Mesh | None = None,
     dynamic_shape_replacement_enabled: bool = False,
 ) -> None:
@@ -181,7 +181,7 @@ class MosaicGridMapping(tc_lowering.MosaicGridMapping):
       grid_mapping: pallas_core.GridMapping,
       dimension_semantics: Sequence[tpu_core.DimensionSemantics] | None,
       mesh: mesh_lib.Mesh | None,
-      kernel_type: tpu_core.KernelType,
+      kernel_type: tpu_core.CoreType,
   ):
     for bm in grid_mapping.block_mappings:
       shape = pallas_core._get_block_shape(bm.block_shape)
@@ -213,7 +213,7 @@ def lower_jaxpr_to_func(
     jaxpr: jax_core.Jaxpr,
     *,
     name: str,
-    kernel_type: tpu_core.KernelType,
+    kernel_type: tpu_core.CoreType,
     mosaic_grid_mapping: MosaicGridMapping,
     forward_compatible: bool,
     backend: Any | None,
@@ -306,8 +306,8 @@ def lower_jaxpr_to_func(
 register_lowering_rule = functools.partial(
     tc_lowering.register_lowering_rule,
     kernel_types=(
-        tpu_core.KernelType.SC_SCALAR_SUBCORE,
-        tpu_core.KernelType.SC_VECTOR_SUBCORE,
+        tpu_core.CoreType.SC_SCALAR_SUBCORE,
+        tpu_core.CoreType.SC_VECTOR_SUBCORE,
     ),
 )
 
@@ -441,7 +441,7 @@ def _store_lowering_rule(
 
 
 @register_lowering_rule(lax.iota_p,
-                        kernel_types=[tpu_core.KernelType.SC_VECTOR_SUBCORE])
+                        kernel_types=[tpu_core.CoreType.SC_VECTOR_SUBCORE])
 def _iota_lowering_rule_sc(ctx: LoweringRuleContext, dtype, shape, dimension,
                            sharding):
   sc_info = sc_core.get_sparse_core_info()
@@ -826,7 +826,7 @@ def _empty_ref_lowering_rule(ctx: LoweringRuleContext, ty, memory_space):
 
 
 @register_lowering_rule(
-    lax.sort_p, kernel_types=[tpu_core.KernelType.SC_VECTOR_SUBCORE]
+    lax.sort_p, kernel_types=[tpu_core.CoreType.SC_VECTOR_SUBCORE]
 )
 def _sort_lowering_rule(
     ctx: LoweringRuleContext, *xs, dimension, is_stable, num_keys
@@ -867,7 +867,7 @@ def _sort_lowering_rule(
 
 
 @register_lowering_rule(
-    lax.gather_p, kernel_types=[tpu_core.KernelType.SC_VECTOR_SUBCORE]
+    lax.gather_p, kernel_types=[tpu_core.CoreType.SC_VECTOR_SUBCORE]
 )
 def _gather_lowering_rule(
     ctx: LoweringRuleContext,
@@ -917,7 +917,7 @@ def _gather_lowering_rule(
 
 
 @register_lowering_rule(
-    lax.rev_p, kernel_types=[tpu_core.KernelType.SC_VECTOR_SUBCORE]
+    lax.rev_p, kernel_types=[tpu_core.CoreType.SC_VECTOR_SUBCORE]
 )
 def _rev_lowering_rule(ctx: LoweringRuleContext, x, dimensions):
   del ctx  # Unused.

@@ -25,6 +25,8 @@ Remember to align the itemized text with the first line of an item within a list
     For example, to force the use of the Triton backend you have to now write
     `compiler_params=pltriton.CompilerParams()`, where `pltriton` refers to
     {mod}`jax.experimental.pallas.triton`.
+  * Renamed {class}`jax.experimental.pallas.tpu.KernelType` to `CoreType`. The
+    old name is deprecated and will be removed in a future release.
 
 ## Released with JAX 0.9.0
 

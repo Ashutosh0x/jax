@@ -65,7 +65,7 @@ def _maybe_cast_to_int(x: jax.Array | jax_core.AbstractValue):
 
 
 def _get_memory_space_from_aval(
-    out_aval: jax_core.AbstractValue, kernel_type: tpu_core.KernelType
+    out_aval: jax_core.AbstractValue, kernel_type: tpu_core.CoreType
 ) -> tpu_custom_call.MemorySpace | None:
   if not isinstance(out_aval, jax_core.ShapedArray):
     raise ValueError("Memory spaces not defined for non-ShapedArrays")
@@ -84,9 +84,9 @@ def _get_memory_space_from_aval(
       return tpu_custom_call.MemorySpace.SMEM
     case tpu_core.MemorySpace.SEMAPHORE:
       match kernel_type:
-        case tpu_core.KernelType.SC_SCALAR_SUBCORE:
+        case tpu_core.CoreType.SC_SCALAR_SUBCORE:
           return tpu_custom_call.MemorySpace.SC_SCALAR_SEMAPHORE_MEM
-        case tpu_core.KernelType.TC:
+        case tpu_core.CoreType.TC:
           return tpu_custom_call.MemorySpace.SEMAPHORE_MEM
         case _:
           raise ValueError(f"Invalid kernel type for semaphore: {kernel_type}")
@@ -96,7 +96,7 @@ def _get_memory_space_from_aval(
 
 
 def _get_memory_spaces_from_avals(
-    avals: Sequence[jax_core.AbstractValue], kernel_type: tpu_core.KernelType
+    avals: Sequence[jax_core.AbstractValue], kernel_type: tpu_core.CoreType
 ) -> tuple[tpu_custom_call.MemorySpace | None, ...] | None:
   memory_spaces = None
   if any(
@@ -114,7 +114,7 @@ def _resolve_memory_spaces(
     out_avals: Sequence[jax_core.AbstractValue],
     *,
     input_output_aliases: tuple[tuple[int, int], ...],
-    kernel_type: tpu_core.KernelType,
+    kernel_type: tpu_core.CoreType,
 ) -> tuple[
     tuple[tpu_custom_call.MemorySpace | None, ...] | None,
     tuple[tpu_custom_call.MemorySpace | None, ...] | None,
@@ -192,8 +192,8 @@ def _resolve_tiling(
   if mosaic_params.use_tc_tiling_on_sc is None:
     return None
   if mosaic_params.kernel_type not in (
-      tpu_core.KernelType.SC_SCALAR_SUBCORE,
-      tpu_core.KernelType.SC_VECTOR_SUBCORE,
+      tpu_core.CoreType.SC_SCALAR_SUBCORE,
+      tpu_core.CoreType.SC_VECTOR_SUBCORE,
   ):
     raise ValueError(
         "use_tc_tiling_on_sc= is only supported for SC_*_SUBCORE kernels"
@@ -361,11 +361,11 @@ def pallas_call_tpu_lowering_rule(
   tpu.register_dialect(mlir_ctx)
 
   match (kernel_type := mosaic_params.kernel_type):
-    case tpu_core.KernelType.TC:
+    case tpu_core.CoreType.TC:
       lower_jaxpr_to_module = lowering.lower_jaxpr_to_module
     case (
-        tpu_core.KernelType.SC_SCALAR_SUBCORE
-        | tpu_core.KernelType.SC_VECTOR_SUBCORE
+        tpu_core.CoreType.SC_SCALAR_SUBCORE
+        | tpu_core.CoreType.SC_VECTOR_SUBCORE
     ):
       lower_jaxpr_to_module = sc_lowering.lower_jaxpr_to_module
     case _:
@@ -466,11 +466,11 @@ def mpmd_map_tpu_lowering_rule(
         )
 
       match kernel_type := mesh.kernel_type:
-        case tpu_core.KernelType.TC:
+        case tpu_core.CoreType.TC:
           lower_jaxpr_into_module = lowering.lower_jaxpr_into_module
         case (
-            tpu_core.KernelType.SC_SCALAR_SUBCORE
-            | tpu_core.KernelType.SC_VECTOR_SUBCORE
+            tpu_core.CoreType.SC_SCALAR_SUBCORE
+            | tpu_core.CoreType.SC_VECTOR_SUBCORE
         ):
           lower_jaxpr_into_module = sc_lowering.lower_jaxpr_into_module
         case _:

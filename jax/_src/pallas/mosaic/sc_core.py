@@ -160,8 +160,8 @@ class ScalarSubcoreMesh:
   num_cores: int
 
   @property
-  def kernel_type(self) -> tpu_core.KernelType:
-    return tpu_core.KernelType.SC_SCALAR_SUBCORE
+  def kernel_type(self) -> tpu_core.CoreType:
+    return tpu_core.CoreType.SC_SCALAR_SUBCORE
 
   @property
   def default_memory_space(self) -> tpu_core.MemorySpace:
@@ -263,8 +263,8 @@ class VectorSubcoreMesh:
       )
 
   @property
-  def kernel_type(self) -> tpu_core.KernelType:
-    return tpu_core.KernelType.SC_VECTOR_SUBCORE
+  def kernel_type(self) -> tpu_core.CoreType:
+    return tpu_core.CoreType.SC_VECTOR_SUBCORE
 
   @property
   def default_memory_space(self) -> tpu_core.MemorySpace:
