@@ -100,12 +100,14 @@ class CompilerParams(pallas_core.CompilerParams):
     kernel_type: Specify if the kernel is meant to run on TensorCore or one of
       the SparseCores
     disable_bounds_checks: Disable bounds checks in the kernel.
+    disable_semaphore_checks: Disable semaphore checks in the kernel.
     skip_device_barrier: Skip the default device barrier for the kernel.
     allow_collective_id_without_custom_barrier: Allow the use of collective_id
       without a custom barrier.
-    use_tc_tiling_on_sc: Use TensorCore tiling for SparseCore. This flag is
-      only used for ``SC_*_SUBCORE`` kernels.
+    use_tc_tiling_on_sc: Use TensorCore tiling for SparseCore. This flag is only
+      used for ``SC_*_SUBCORE`` kernels.
   """
+
   dimension_semantics: tuple[DimensionSemantics, ...] | None = None
   allow_input_fusion: tuple[bool, ...] | None = None
   vmem_limit_bytes: int | None = None
@@ -116,6 +118,7 @@ class CompilerParams(pallas_core.CompilerParams):
   serialization_format: int = 1
   kernel_type: CoreType = CoreType.TC
   disable_bounds_checks: bool = False
+  disable_semaphore_checks: bool = False
   skip_device_barrier: bool = False
   allow_collective_id_without_custom_barrier: bool = False
   shape_invariant_numerics: bool = True
@@ -133,6 +136,7 @@ class CompilerParams(pallas_core.CompilerParams):
       serialization_format: int = 1,
       kernel_type: CoreType = CoreType.TC,
       disable_bounds_checks: bool = False,
+      disable_semaphore_checks: bool = False,
       skip_device_barrier: bool = False,
       allow_collective_id_without_custom_barrier: bool = False,
       shape_invariant_numerics: bool = True,
@@ -160,6 +164,9 @@ class CompilerParams(pallas_core.CompilerParams):
     object.__setattr__(self, "serialization_format", serialization_format)
     object.__setattr__(self, "kernel_type", kernel_type)
     object.__setattr__(self, "disable_bounds_checks", disable_bounds_checks)
+    object.__setattr__(
+        self, "disable_semaphore_checks", disable_semaphore_checks
+    )
     object.__setattr__(self, "skip_device_barrier", skip_device_barrier)
     object.__setattr__(
         self,

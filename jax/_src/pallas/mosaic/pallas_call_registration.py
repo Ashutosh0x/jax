@@ -299,6 +299,7 @@ def _lower_to_custom_call(
       ),
       output_memory_spaces=output_memory_spaces,
       disable_bounds_checks=mosaic_params.disable_bounds_checks,
+      disable_semaphore_checks=mosaic_params.disable_semaphore_checks,
       input_memory_spaces=input_memory_spaces,
       metadata=dict_metadata,
       skip_device_barrier=mosaic_params.skip_device_barrier,

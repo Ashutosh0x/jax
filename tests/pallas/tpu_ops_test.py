@@ -605,6 +605,34 @@ class OpsTest(ptu.PallasTPUTest):
         output[tuple(slice(0, d) for d in src_shape)], x
     )
 
+  @parameterized.parameters([True, False])
+  def test_disable_semaphore_checks(self, disable_semaphore_checks):
+    def kernel(y_ref, sems):
+      i = pl.program_id(0)
+      pltpu.semaphore_signal(sems.at[i, 0])
+
+    try:
+      jax.block_until_ready(
+          self.pallas_call(
+              kernel,
+              in_specs=[],
+              out_specs=pl.BlockSpec((8, 128), lambda i: (0, 0)),
+              scratch_shapes=[pltpu.SemaphoreType.REGULAR((1, 1))],
+              out_shape=jax.ShapeDtypeStruct((8, 128), jnp.float32),
+              grid=1,
+              compiler_params=pltpu.CompilerParams(
+                  disable_semaphore_checks=disable_semaphore_checks
+              ),
+          )()
+      )
+    except Exception as e:
+      self.assertIn(
+          "Semaphore (scratch argument 0) has a nonzero value", str(e)
+      )
+      self.assertFalse(disable_semaphore_checks)
+    else:
+      self.assertTrue(disable_semaphore_checks)
+
   def test_while_loop_arg_num_change(self):
     # This kernel will generate a while loop that will be CSEd by MLIR to have
     # the different number of argments in before region and after region.
