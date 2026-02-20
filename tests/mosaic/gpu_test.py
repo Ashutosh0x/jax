@@ -4434,11 +4434,16 @@ class FragmentedArrayTest(TestCase):
     iota = np.arange(m * n, dtype=jnp.uint16).reshape(m, n)
     np.testing.assert_array_equal(result, (iota > 10).astype(jnp.uint8))
 
-  @parameterized.product(dtype=(jnp.bfloat16, jnp.float16))
-  def test_mma(self, dtype):
+  @parameterized.product(
+      dtype=(jnp.bfloat16, jnp.float16, jnp.float8_e4m3fn, jnp.float8_e5m2),
+  )
+  def test_warp_mma(self, dtype):
+    dtype = jnp.dtype(dtype)
     m, n, k = 128, 128, 128
+    k_tile = 32 if dtype.itemsize == 1 else 16
     def kernel(ctx: mgpu.LaunchContext, acc, a, b, out, scratch):
       (acc_smem, a_smem, b_smem), barrier = scratch
+      layouts = mgpu.MMALayouts(utils.dtype_to_ir_type(dtype))
 
       def load(x, x_smem, layout, swizzle=32):
         ctx.async_copy(
@@ -4451,9 +4456,9 @@ class FragmentedArrayTest(TestCase):
         barrier.wait()
         return fa.FragmentedArray.load_tiled(x_smem, swizzle=swizzle, layout=layout)
 
-      b_fa = load(b, b_smem, mgpu.MMALayouts.rhs)
-      a_fa = load(a, a_smem, mgpu.MMALayouts.lhs)
-      acc_fa = load(acc, acc_smem, mgpu.MMALayouts.acc)
+      b_fa = load(b, b_smem, layouts.rhs)
+      a_fa = load(a, a_smem, layouts.lhs)
+      acc_fa = load(acc, acc_smem, layouts.acc)
       result_fa: mgpu.FragmentedArray = mgpu.mma(acc_fa, a_fa, b_fa)
       result_fa.store_tiled(acc_smem, swizzle=32)
       mgpu.commit_shared()
@@ -4479,8 +4484,8 @@ class FragmentedArrayTest(TestCase):
         smem_scratch_shape=(
             mgpu.Union([
                 jax.ShapeDtypeStruct(mgpu.tile_shape((m, n), (8, 8)), dtype=jnp.float32),
-                jax.ShapeDtypeStruct(mgpu.tile_shape((m, k), (8, 16)), dtype=dtype),
-                jax.ShapeDtypeStruct(mgpu.tile_shape((n, k), (8, 16)), dtype=dtype),
+                jax.ShapeDtypeStruct(mgpu.tile_shape((m, k), (8, k_tile)), dtype=dtype),
+                jax.ShapeDtypeStruct(mgpu.tile_shape((n, k), (8, k_tile)), dtype=dtype),
             ]),
             mgpu.Barrier(1)
         ),
