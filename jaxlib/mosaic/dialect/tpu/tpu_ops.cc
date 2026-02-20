@@ -1874,6 +1874,23 @@ LogicalResult ReciprocalOp::verify() {
   return success();
 }
 
+LogicalResult SignOp::verify() {
+  Type type = getType();
+  if (auto vty = dyn_cast<VectorType>(type)) {
+    Type ety = vty.getElementType();
+    if (!ety.isF32() && !ety.isBF16() && !ety.isSignlessInteger(32)) {
+      return emitOpError("Unsupported vector element type for sign op: ")
+             << ety << " (only f32, bf16, and i32 scalars are supported)";
+    }
+  } else {
+    if (!type.isSignlessInteger(32)) {
+      return emitOpError("Unsupported scalar type for sign op: ")
+             << type << " (only i32 scalars are supported)";
+    }
+  }
+  return success();
+}
+
 LogicalResult UnpackSubelementsOp::verify() {
   const int packing_factor = getElementTypeBitwidth(getType()) /
                              getElementTypeBitwidth(getSource().getType());

@@ -988,6 +988,13 @@ def TPU_ReciprocalOp : TPU_Op<"reciprocal", [Pure, SameOperandsAndResultType, El
   let hasVerifier = 1;
 }
 
+def TPU_SignOp : TPU_Op<"sign", [Pure, SameOperandsAndResultType, ElementwiseMappable]> {
+  let arguments = (ins AnyType:$input);
+  let results = (outs AnyType:$output);
+  let assemblyFormat = [{ $input attr-dict `:` type($input) }];
+  let hasVerifier = 1;
+}
+
 def TPU_StochasticConvertOp : TPU_Op<"stochastic_convert", [Pure, SameOperandsAndResultShape]> {
   let arguments = (ins
     VectorOfNonZeroRankOf<[F32]>:$input,
