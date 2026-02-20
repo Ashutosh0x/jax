@@ -22,43 +22,64 @@ import numpy as np
 from . import utils
 
 
+SUPPORTED_F8_TYPES = (ir.Float8E4M3FNType, ir.Float8E5M2Type)
+
+
 class MMALayouts:
   """Container for MMA layouts, providing a convenient way to create
   layouts for MMA operands based on warp configuration.
   """
 
-  lhs = fa.TiledLayout(
-      fa.Tiling(((64, 16), (16, 8), (8, 8), (2,))),
-      warp_dims=(-7,),
-      lane_dims=(-3, -2),
-      vector_dim=-1,
-  )
-  rhs = fa.TiledLayout(
-      fa.Tiling(((8, 16), (8, 8), (2,))),
-      warp_dims=(fa.Replicated(4),),
-      lane_dims=(-3, -2),
-      vector_dim=-1,
-  )
-  acc = fa.TiledLayout(
-      fa.Tiling(((64, 8), (16, 8), (8, 8), (2,))),
-      warp_dims=(-7,),
-      lane_dims=(-3, -2),
-      vector_dim=-1,
-  )
+  def __init__(self, element_type: ir.Type):
+    elems_per_reg = 32 // utils.bitwidth(element_type)
+    k = 8 * elems_per_reg
+    sub_k = 4 * elems_per_reg
+    self.lhs = fa.TiledLayout(
+        fa.Tiling(((64, k), (16, sub_k), (8, sub_k), (elems_per_reg,))),
+        warp_dims=(-7,),
+        lane_dims=(-3, -2),
+        vector_dim=-1,
+    )
+    self.rhs = fa.TiledLayout(
+        fa.Tiling(((8, k), (8, sub_k), (elems_per_reg,))),
+        warp_dims=(fa.Replicated(4),),
+        lane_dims=(-3, -2),
+        vector_dim=-1,
+    )
+    self.acc = fa.TiledLayout(
+        fa.Tiling(((64, 8), (16, 8), (8, 8), (2,))),
+        warp_dims=(-7,),
+        lane_dims=(-3, -2),
+        vector_dim=-1,
+    )
+
+
+def _ptx_dtype_str(dtype: ir.Type, *, is_signed: bool | None = None) -> str:
+  if isinstance(dtype, ir.Float8E4M3FNType):
+    return "e4m3"
+  elif isinstance(dtype, ir.Float8E5M2Type):
+    return "e5m2"
+  elif isinstance(dtype, ir.IntegerType):
+    if is_signed is None:
+      raise ValueError("is_signed must be specified for integer types")
+    return "s8" if is_signed else "u8"
+  return str(dtype)
 
 
 def _mma_single_tile(
     acc: fa.FragmentedArray, a: fa.FragmentedArray, b: fa.FragmentedArray
 ) -> fa.FragmentedArray:
   """Performs `acc + a @ b.T` using warp level MMA instructions."""
+  i32 = ir.IntegerType.get_signless(32)
 
-  # Muliply by 4 because the fragmtned array has a tile per warp.
-  assert a.shape == (64, 16)
-  assert b.shape == (8, 16)
+  k_tile = 32 // utils.bytewidth(a.mlir_dtype)
+  assert a.shape == (64, k_tile)
+  assert b.shape == (8, k_tile)
   assert acc.shape == (64, 8)
   assert a.mlir_dtype == b.mlir_dtype
-  assert a.mlir_dtype in (ir.F16Type.get(), ir.BF16Type.get())
-  assert acc.mlir_dtype == ir.F32Type.get()
+  is_integer = isinstance(a.mlir_dtype, ir.IntegerType)
+  assert acc.mlir_dtype == i32 if is_integer else ir.F32Type.get()
+  assert acc.is_signed in {None, True}
   assert (
       isinstance(acc.layout, fa.TiledLayout)
       and isinstance(a.layout, fa.TiledLayout)
@@ -75,7 +96,6 @@ def _mma_single_tile(
       for reg in acc.registers.flatten()
       for pos in range(acc.layout.vector_length)
   ]
-  i32 = ir.IntegerType.get_signless(32)
   a_regs = [utils.bitcast(r, i32) for r in a.registers.flatten()]
   b_regs = [utils.bitcast(r, i32) for r in b.registers.flatten()]
 
@@ -84,7 +104,11 @@ def _mma_single_tile(
   assert len(acc_regs) == 4
   assert len(b_regs) == 2
 
-  instr = f"mma.sync.aligned.m16n8k16.row.col.f32.{a.mlir_dtype}.{b.mlir_dtype}.f32"
+  a_ptx_dtype = _ptx_dtype_str(a.mlir_dtype, is_signed=a.is_signed)
+  b_ptx_dtype = _ptx_dtype_str(b.mlir_dtype, is_signed=b.is_signed)
+  acc_ptx_dtype = "s32" if is_integer else "f32"
+  acc_constraint = "r" if is_integer else "f"
+  instr = f"mma.sync.aligned.m16n8k{k_tile}.row.col.{acc_ptx_dtype}.{a_ptx_dtype}.{b_ptx_dtype}.{acc_ptx_dtype}"
   counter = itertools.count()
   n_regs_str = lambda n: (
       "{" + ",".join([f"${next(counter)}" for _ in range(n)]) + "}"
@@ -96,10 +120,10 @@ def _mma_single_tile(
   ptx = f"{instr} {out_regs_str}, {a_regs_str}, {b_regs_str}, {c_regs_str};"
   # See: https://llvm.org/docs/LangRef.html#inline-assembler-expressions
   constraints = (
-      f"{','.join(['=f']*num_acc_regs)},"  # Output accumulator regs
-      f"{','.join(['r']*num_a_regs)},"  # Input A regs
+      f"{','.join([f'={acc_constraint}']*num_acc_regs)},"
+      f"{','.join(['r']*num_a_regs)},"
       f"{','.join(['r']*num_b_regs)},"
-      f"{','.join(['f']*num_acc_regs)}"  # Input accumulator regs
+      f"{','.join([acc_constraint]*num_acc_regs)}"
   )
 
   in_operands = [*a_regs, *b_regs, *acc_regs]
@@ -125,7 +149,7 @@ def _mma_single_tile(
     vec_regs.append(vec)
   out_regs = np.asarray(vec_regs, dtype=object).reshape(acc.registers.shape)
   return fa.FragmentedArray(
-      _registers=out_regs, _layout=acc.layout, _is_signed=None
+      _registers=out_regs, _layout=acc.layout, _is_signed=acc.is_signed
   )
 
 
@@ -169,18 +193,31 @@ def mma(
   # sharded across warps.
   bf16 = ir.BF16Type.get()
   f16 = ir.F16Type.get()
+  i8 = ir.IntegerType.get_signless(8)
+  i32 = ir.IntegerType.get_signless(32)
+  f8e4m3fn = ir.Float8E4M3FNType.get()
+  f8e5m2 = ir.Float8E5M2Type.get()
   if a.mlir_dtype != b.mlir_dtype:
     raise ValueError(f"Dtype mismatch: {a.mlir_dtype} != {b.mlir_dtype}")
-  if a.mlir_dtype not in (bf16, f16):
-    raise NotImplementedError("Only bf16 and f16 supported for the operands.")
-  if acc.mlir_dtype != ir.F32Type.get():
+  if a.mlir_dtype not in (bf16, f16, f8e4m3fn, f8e5m2, i8):
+    raise NotImplementedError(
+        "Only bf16, f16, float8_e4m3fn, float8_e5m2 and i8 supported for the"
+        " operands."
+    )
+  if a.mlir_dtype == i8:
+    if acc.mlir_dtype != i32:
+      raise NotImplementedError("Only s32 accumulator supported for i8 operands.")
+    if not acc.is_signed:
+      raise ValueError("Only signed accumulator supported for i8 operands.")
+  elif acc.mlir_dtype != ir.F32Type.get():
     raise NotImplementedError("Only f32 accumulator supported.")
 
-  if MMALayouts.lhs != a.layout:
+  layouts = MMALayouts(a.mlir_dtype)
+  if layouts.lhs != a.layout:
     raise ValueError("Expected MMALayouts.lhs layout for A")
-  if MMALayouts.rhs != b.layout:
+  if layouts.rhs != b.layout:
     raise ValueError("Expected MMALayouts.rhs layout for B")
-  if MMALayouts.acc != acc.layout:
+  if layouts.acc != acc.layout:
     raise ValueError("Expected MMALayouts.acc layout for acc")
 
   assert isinstance(a.layout, fa.TiledLayout)
@@ -195,16 +232,6 @@ def mma(
   assert n_tile2 == n_tile
 
   num_m_tiles, num_n_tiles, num_k_tiles = m // m_tile, n // n_tile, k // k_tile
-  if m != m2:
-    raise ValueError(f"M mismatch: {m} != {m2}")
-  if n != n2:
-    raise ValueError(f"N mismatch: {n} != {n2}")
-  if k != k2:
-    raise ValueError(f"K mismatch: {k} != {k2}")
-
-  assert m_tile == 64 and n_tile == 8 and k_tile == 16, (
-      f"Tile shape {m_tile}, {n_tile}, {k_tile} not supported."
-  )
 
   # Do not modify the accumualtor itself.
   acc = acc.copy()

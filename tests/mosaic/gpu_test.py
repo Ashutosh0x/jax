@@ -4434,13 +4434,21 @@ class FragmentedArrayTest(TestCase):
     iota = np.arange(m * n, dtype=jnp.uint16).reshape(m, n)
     np.testing.assert_array_equal(result, (iota > 10).astype(jnp.uint8))
 
-  @parameterized.product(dtype=(jnp.bfloat16, jnp.float16))
-  def test_mma(self, dtype):
+  @parameterized.product(
+      dtype=(jnp.bfloat16, jnp.float16, jnp.float8_e4m3fn, jnp.float8_e5m2,
+             jnp.int8, jnp.uint8),
+  )
+  def test_warp_mma(self, dtype):
     m, n, k = 128, 128, 128
+    dtype = jnp.dtype(dtype)
+    is_integer = jnp.issubdtype(dtype, jnp.integer)
+    acc_dtype = jnp.int32 if is_integer else jnp.float32
+    k_tile = 32 if dtype.itemsize == 1 else 16
     def kernel(ctx: mgpu.LaunchContext, acc, a, b, out, scratch):
       (acc_smem, a_smem, b_smem), barrier = scratch
+      layouts = mgpu.MMALayouts(utils.dtype_to_ir_type(dtype))
 
-      def load(x, x_smem, layout, swizzle=32):
+      def load(x, x_smem, layout, dtype, swizzle=32):
         ctx.async_copy(
             src_ref=x,
             dst_ref=x_smem,
@@ -4449,11 +4457,13 @@ class FragmentedArrayTest(TestCase):
             barrier=barrier,
         )
         barrier.wait()
-        return fa.FragmentedArray.load_tiled(x_smem, swizzle=swizzle, layout=layout)
+        return fa.FragmentedArray.load_tiled(
+            x_smem, swizzle=swizzle, layout=layout, is_signed=utils.is_signed(dtype)
+        )
 
-      b_fa = load(b, b_smem, mgpu.MMALayouts.rhs)
-      a_fa = load(a, a_smem, mgpu.MMALayouts.lhs)
-      acc_fa = load(acc, acc_smem, mgpu.MMALayouts.acc)
+      b_fa = load(b, b_smem, layouts.rhs, dtype)
+      a_fa = load(a, a_smem, layouts.lhs, dtype)
+      acc_fa = load(acc, acc_smem, layouts.acc, acc_dtype)
       result_fa: mgpu.FragmentedArray = mgpu.mma(acc_fa, a_fa, b_fa)
       result_fa.store_tiled(acc_smem, swizzle=32)
       mgpu.commit_shared()
@@ -4465,11 +4475,16 @@ class FragmentedArrayTest(TestCase):
       )
       ctx.await_async_copy(0)
 
-    a = self.prng.uniform(-1, 1, (m, k)).astype(dtype)
-    b = self.prng.uniform(-1, 1, (n, k)).astype(dtype)
-    acc = self.prng.uniform(-1, 1, (m, n)).astype(jnp.float32)
+    if is_integer:
+      a = self.prng.integers(-32, 32, (m, k)).astype(dtype)
+      b = self.prng.integers(-32, 32, (n, k)).astype(dtype)
+      acc = self.prng.integers(-100, 100, (m, n)).astype(acc_dtype)
+    else:
+      a = self.prng.uniform(-1, 1, (m, k)).astype(dtype)
+      b = self.prng.uniform(-1, 1, (n, k)).astype(dtype)
+      acc = self.prng.uniform(-1, 1, (m, n)).astype(acc_dtype)
 
-    expected = acc + a.astype(jnp.float32) @ b.astype(jnp.float32).T
+    expected = acc + a.astype(acc_dtype) @ b.astype(acc_dtype).T
     result = mgpu.as_gpu_kernel(
         kernel,
         (1, 1, 1),
@@ -4478,14 +4493,17 @@ class FragmentedArrayTest(TestCase):
         out_shape=expected,
         smem_scratch_shape=(
             mgpu.Union([
-                jax.ShapeDtypeStruct(mgpu.tile_shape((m, n), (8, 8)), dtype=jnp.float32),
-                jax.ShapeDtypeStruct(mgpu.tile_shape((m, k), (8, 16)), dtype=dtype),
-                jax.ShapeDtypeStruct(mgpu.tile_shape((n, k), (8, 16)), dtype=dtype),
+                jax.ShapeDtypeStruct(mgpu.tile_shape((m, n), (8, 8)), dtype=acc_dtype),
+                jax.ShapeDtypeStruct(mgpu.tile_shape((m, k), (8, k_tile)), dtype=dtype),
+                jax.ShapeDtypeStruct(mgpu.tile_shape((n, k), (8, k_tile)), dtype=dtype),
             ]),
             mgpu.Barrier(1)
         ),
     )(acc, a, b)
-    np.testing.assert_allclose(result, expected, atol=1e-5)
+    if is_integer:
+      np.testing.assert_array_equal(result, expected)
+    else:
+      np.testing.assert_allclose(result, expected, atol=1e-5)
 
   @parameterized.parameters(
       (jnp.uint8, jnp.uint16, 255),
