@@ -924,8 +924,17 @@ class OpsTest(PallasBaseTest):
     if not jax.config.x64_enabled and jnp.dtype(dtype).itemsize == 8:
       self.skipTest("64-bit types require x64_enabled")
 
-    if jtu.test_device_matches(["tpu"]) and jnp.dtype(dtype).itemsize == 2:
-      self.skipTest("16-bit types are not supported on TPU")
+    if jtu.test_device_matches(["tpu"]):
+      if dtype == jnp.float16:
+        self.skipTest("f16 load not supported on TPU")
+      if dtype in (jnp.int16, jnp.uint16) and jtu.get_tpu_version() < 6:
+        self.skipTest("requires TPU v6+")
+      if (
+          dtype == jnp.bfloat16
+          and jtu.get_tpu_version() == 5
+          and not jtu.is_cloud_tpu_at_least(2025, 2, 25)
+      ):
+        self.skipTest("requires a newer libTPU")
 
     @functools.partial(
         self.pallas_call,

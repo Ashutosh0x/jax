@@ -297,12 +297,12 @@ class OpsTest(ptu.PallasTPUTest):
 
   @parameterized.product(dtype=[jnp.float32, jnp.bfloat16, jnp.int16, jnp.int8])
   def test_cast_vector_to_mask(self, dtype):
-    shape = (128, 128)
-    bitwidth = dtypes.itemsize_bits(dtype)
-    if jtu.get_tpu_version() < 5 and bitwidth < 32:
+    if jtu.get_tpu_version() < 5 and dtype in (jnp.int16, jnp.int8):
       self.skipTest(
-          f"Not implemented: cast vector to mask with bitwidth == {bitwidth}"
+          f"Not implemented: cast vector to mask with dtype == {dtype}"
       )
+
+    shape = (128, 128)
 
     @functools.partial(
         self.pallas_call,
