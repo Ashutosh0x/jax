@@ -3582,9 +3582,14 @@ def full_like(x: ArrayLike | DuckTypedArray,
   if dtypes.issubdtype(dtype, dtypes.extended):
     return dtype._rules.full(fill_shape, fill_value, dtype)  # type: ignore[union-attr]
 
+  if (isinstance(sharding, NamedSharding) and
+      sharding.mesh.empty and not getattr(sharding, '_is_concrete', False)):
+    sharding = None
+
   if sharding is None and shape is None and isinstance(x, core.Tracer):
     sharding = x.aval.sharding
   else:
+
     # If `x` has a sharding but no `_committed` attribute
     # (in case of ShapeDtypeStruct), default it to True.
     use_x_sharding = (
