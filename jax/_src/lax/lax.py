@@ -3582,6 +3582,11 @@ def full_like(x: ArrayLike | DuckTypedArray,
   if dtypes.issubdtype(dtype, dtypes.extended):
     return dtype._rules.full(fill_shape, fill_value, dtype)  # type: ignore[union-attr]
 
+  # If a NamedSharding with an empty mesh is passed, treat it as None
+  # to allow fallback to the source array's physical sharding. This
+  # happens when indexing.py passes an abstract sharding from an aval.
+  # We do this before the Tracer check to ensure both physical arrays
+  # and tracers use the correct inherited sharding.
   if (isinstance(sharding, NamedSharding) and
       sharding.mesh.empty and not getattr(sharding, '_is_concrete', False)):
     sharding = None
